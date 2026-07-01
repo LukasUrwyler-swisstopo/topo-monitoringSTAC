@@ -180,12 +180,16 @@ class StacMonitorApp(tk.Tk):
     _COL_W     = {"sel": 60, "area": 90, "status": 100, "typ": 90,
                   "groesse": 90, "geaendert": 105}
 
-    # Farbige Emoji-Kreise: Farbe ist fest im Zeichen kodiert und bleibt unabhängig
-    # von der Zeilen-Textfarbe (Status Grün/Rot/Grau, Item Blau) sichtbar –
-    # ttk.Treeview kann sonst nur pro ganzer Zeile, nicht pro Zelle einfärben.
-    _CHK_ON      = "🟢"
-    _CHK_OFF     = "⚪"
-    _CHK_PARTIAL = "🟡"
+    # Kreis-Glyphen aus dem Unicode-BMP-Bereich (Geometric Shapes, U+25xx):
+    # Zustand wird über die Form kodiert, nicht über Emoji-Farbe – dadurch
+    # unabhängig von der Zeilen-Textfarbe sichtbar. Farbige Emoji-Kreise
+    # (z.B. 🟢/🟡, U+1F7Ex) liegen ausserhalb der BMP (>U+FFFF) und lassen
+    # manche Tcl/Tk-Builds (z.B. Python 3.6 auf Windows) mit
+    # "character U+... is above the range (U+0000-U+FFFF) allowed by Tcl"
+    # abstürzen.
+    _CHK_ON      = "●"
+    _CHK_OFF     = "○"
+    _CHK_PARTIAL = "◐"
 
     def __init__(self):
         super().__init__()
@@ -323,7 +327,8 @@ class StacMonitorApp(tk.Tk):
         row.pack(fill="x", pady=(0, 4))
 
         self._load_btn = ttk.Button(
-            row, text="Laden", command=self._load, state="disabled")
+            row, text="Laden", command=self._load, state="disabled",
+            style="AmberBold.TButton")
         self._load_btn.pack(side="left", padx=(0, 16))
 
         ttk.Separator(row, orient="vertical").pack(side="left", fill="y", padx=(0, 16))
@@ -354,7 +359,12 @@ class StacMonitorApp(tk.Tk):
 
         self._export_csv_btn = ttk.Button(
             sec, text="Export CSV", command=self._export_csv, state="disabled")
-        self._export_csv_btn.pack(side="left")
+        self._export_csv_btn.pack(side="left", padx=(0, 4))
+
+        self._export_links_btn = ttk.Button(
+            sec, text="Item - STAC Browser Links",
+            command=self._export_stac_browser_links, state="disabled")
+        self._export_links_btn.pack(side="left")
 
     def _build_tree(self, parent):
         frame = ttk.LabelFrame(parent, text="3   Items & Assets",
@@ -456,6 +466,14 @@ class StacMonitorApp(tk.Tk):
             background=[("active", T["btn_hover"]), ("pressed", T["sep"])],
             foreground=[("active", T["warn"])],
             relief=[("pressed", "flat")])
+        s.configure("AmberBold.TButton",
+            background=T["btn"], foreground=T["warn"],
+            bordercolor=T["sep"], relief="flat", padding=(8, 4), focuscolor=T["panel"],
+            font=("Segoe UI", 9, "bold"))
+        s.map("AmberBold.TButton",
+            background=[("active", T["btn_hover"]), ("pressed", T["sep"])],
+            foreground=[("active", T["warn"])],
+            relief=[("pressed", "flat")])
         s.configure("TRadiobutton",
             background=T["panel"], foreground=T["fg"], focuscolor=T["panel"])
         s.map("TRadiobutton",
@@ -533,6 +551,7 @@ class StacMonitorApp(tk.Tk):
         self._cred_lbl.configure(text="nicht geladen")
         self._cred_btn.configure(style="Amber.TButton")
         self._load_btn.config(state="disabled")
+        self._load_btn.configure(style="AmberBold.TButton")
 
     def _open_stac_browser(self, item_id: Optional[str] = None):
         url = browser_url(self._env_var.get(), item_id)
@@ -574,6 +593,7 @@ class StacMonitorApp(tk.Tk):
     def _load(self):
         if not self._auth:
             return
+        self._load_btn.configure(style="TButton")
         self._set_busy(True)
         self._all_items.clear()
         self._asset_info.clear()
@@ -611,6 +631,7 @@ class StacMonitorApp(tk.Tk):
             self._check_btn.config(state="disabled")
             self._export_json_btn.config(state="disabled")
             self._export_csv_btn.config(state="disabled")
+            self._export_links_btn.config(state="disabled")
 
     # ── Filter + Treeview ─────────────────────────────────────────────────────
 
@@ -726,6 +747,7 @@ class StacMonitorApp(tk.Tk):
         self._check_btn.config(state=state)
         self._export_json_btn.config(state=state)
         self._export_csv_btn.config(state=state)
+        self._export_links_btn.config(state=state)
         self._expand_btn.config(state=state)
         self._collapse_btn.config(state=state)
         self._select_all_btn.config(state=state)
@@ -1077,6 +1099,54 @@ class StacMonitorApp(tk.Tk):
             self._log_write(f"[Export] CSV: {path}\n")
             messagebox.showinfo("Export erfolgreich",
                                 f"{len(rows)} Zeilen exportiert.\n{path}")
+        except Exception as exc:
+            messagebox.showerror("Export-Fehler", str(exc))
+
+    def _export_stac_browser_links(self):
+        if not self._visible_items:
+            messagebox.showwarning("Keine Daten", "Keine Items geladen.")
+            return
+        path = filedialog.asksaveasfilename(
+            defaultextension=".txt",
+            filetypes=[("Textdatei", "*.txt"), ("Alle Dateien", "*.*")],
+            title="Item - STAC Browser Links exportieren",
+            initialfile=f"item_STAC-Browser-Links_{datetime.now().strftime('%Y-%m-%d_%H%M%S')}.txt",
+        )
+        if not path:
+            return
+
+        env    = self._env_var.get()
+        exts   = self._active_extensions()
+        _pfx   = COLLECTION_ID + "_"
+        blocks = []
+        for item in self._visible_items:
+            iid     = item["id"]
+            display = iid[len(_pfx):] if iid.startswith(_pfx) else iid
+            assets  = item.get("assets", {})
+            asset_keys = []
+            for ak, aval in assets.items():
+                href = aval.get("href", "")
+                if exts and not any(href.lower().endswith(e) or ak.lower().endswith(e)
+                                    for e in exts):
+                    continue
+                if not self._is_checked(f"asset::{iid}::{ak}"):
+                    continue
+                asset_keys.append(ak)
+            if not asset_keys:
+                continue
+            lines = [f"{display};", browser_url(env, iid)]
+            lines.extend(f"- {ak}" for ak in sorted(asset_keys))
+            blocks.append("\n".join(lines))
+
+        if not blocks:
+            messagebox.showwarning("Keine Auswahl", "Keine ausgewählten Assets nach Filter.")
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("\n\n\n".join(blocks) + "\n")
+            self._log_write(f"[Export] STAC-Browser-Links: {path}\n")
+            messagebox.showinfo("Export erfolgreich",
+                                f"{len(blocks)} Item(s) exportiert.\n{path}")
         except Exception as exc:
             messagebox.showerror("Export-Fehler", str(exc))
 
