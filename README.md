@@ -8,10 +8,17 @@ BGDI. Keine Schreib- oder Löschfunktionen.
 
 - Items der Collection laden (alle, gefiltert oder per exakter Item-ID)
 - Filter nach Auftragstyp (KRY / RAM), Jahr, Item-ID/Suchbegriff, Dateiendung
-- Asset-Status-Prüfung via HTTP HEAD (Statuscode, Dateigrösse, Last-Modified)
+- Area-Spalte: AOI-Name aus Item-Properties bzw. aus der Asset-Description
+  (`Area: ...`) erkannt und angezeigt, sowohl je Item als auch je Asset
+- Checkboxen je Item/Asset ("Auswahl"-Spalte) zur Auswahl, was geprüft/exportiert
+  wird; Item-Checkbox (de)selektiert alle zugehörigen Assets, Tri-State bei
+  Teilauswahl. Buttons "Alle auswählen" / "Alles abwählen" für Massenauswahl
+- Asset-Status-Prüfung via HTTP HEAD (Statuscode, Dateigrösse, Last-Modified),
+  nur für ausgewählte Assets
 - Statistik: OK / Fehler / Gesamtgrösse geprüfter Assets
-- Export der Download-Links als JSON (für Kunden)
-- Export der Asset-Tabelle als CSV (für interne Auswertung)
+- Export der Download-Links als JSON (für Kunden), inkl. Area je Asset, nur
+  ausgewählte Assets
+- Export der Asset-Tabelle als CSV (für interne Auswertung), nur ausgewählte Assets
 - Item-JSON-Detailansicht, URL in Zwischenablage kopieren / im Browser öffnen
 - STAC Browser öffnen (Collection- oder Item-Deep-Link, für Kunden-Weitergabe)
 - Hell/Dark-Theme
@@ -58,8 +65,10 @@ python 0_GUI_stac_monitor.py
 2. Filter setzen (optional)
 3. "Laden" – bei vollständiger Item-ID im Suchfeld Direct-Lookup, sonst
    automatischer Fallback auf Laden der gesamten Collection + Filter
-4. Sektion "STAC-Funktionen": "Assets prüfen (HEAD)" für Status/Grösse/
-   Last-Modified, danach Export als JSON oder CSV
+4. Optional: Auswahl über die Checkbox-Spalte ("Export") anpassen – per
+   Klick auf ein Item oder Asset, oder über "Alle auswählen"/"Alles abwählen"
+5. Sektion "STAC-Funktionen": "Assets prüfen (HEAD)" für Status/Grösse/
+   Last-Modified, danach Export als JSON oder CSV (jeweils nur Auswahl)
 
 ## Dateien
 

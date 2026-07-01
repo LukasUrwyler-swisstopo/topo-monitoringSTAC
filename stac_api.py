@@ -162,13 +162,47 @@ def stac_item_year(item: Dict) -> str:
     return m.group(1) if m else ""
 
 
+# Bekannte Schlüssel im "Key: Value, Key: Value, ..."-Format der Asset-Description
+# (z.B. "Area: RANDA, TerrainModel: ..., Acquisition time: t1,t2,t3, LineId: ...").
+# Einzelne Werte (Acquisition time, LineId) enthalten selbst Kommas – ein Split
+# ausschliesslich anhand dieser bekannten Schlüssel verhindert falsches Zerteilen.
+_ASSET_DESC_KEYS = [
+    "Area", "TerrainModel", "SourceReferenceSystem", "CameraSystem",
+    "Acquisition time", "LineId", "Commentary",
+]
+
+
+def parse_asset_description(description: str) -> Dict[str, str]:
+    """Zerlegt die Asset-Description in ein Dict der bekannten Schlüssel."""
+    if not description:
+        return {}
+    pattern = r"(" + "|".join(re.escape(k) for k in _ASSET_DESC_KEYS) + r"):\s*"
+    matches = list(re.finditer(pattern, description))
+    result: Dict[str, str] = {}
+    for i, m in enumerate(matches):
+        start = m.end()
+        end   = matches[i + 1].start() if i + 1 < len(matches) else len(description)
+        result[m.group(1)] = description[start:end].rstrip(", ").strip()
+    return result
+
+
+def asset_area(asset: Dict) -> str:
+    """Extrahiert den 'Area'-Wert aus der Asset-Description, falls vorhanden."""
+    return parse_asset_description(asset.get("description", "")).get("Area", "")
+
+
 def stac_item_area(item: Dict) -> str:
-    """Gibt den AOI-Namen zurück, nur wenn er explizit in den Item-Properties steht."""
+    """Gibt den AOI-Namen zurück: zuerst aus Item-Properties (falls vorhanden),
+    sonst aus der Description des ersten passenden Assets."""
     props = item.get("properties", {})
     for key in ("area", "aoi", "area_name", "region"):
         val = str(props.get(key, "")).strip()
         if val:
             return val.upper()
+    for asset in item.get("assets", {}).values():
+        area = asset_area(asset)
+        if area:
+            return area.upper()
     return ""
 
 

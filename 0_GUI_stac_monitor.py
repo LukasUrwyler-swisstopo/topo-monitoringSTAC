@@ -1,5 +1,5 @@
 """
-1_GUI_stac_monitor.py  –  STAC Monitoring-Tool (read-only)
+0_GUI_stac_monitor.py  –  STAC Monitoring-Tool (read-only)
 
 Zeigt Items und Assets der Collection "ch.swisstopo.spezialbefliegungen"
 in einer Baumansicht. Funktionen:
@@ -31,7 +31,7 @@ from tkinter import ttk, messagebox, scrolledtext, filedialog
 from stac_api import (
     COLLECTION_ID, ENVIRONMENTS, AUFTRAGSTYPEN, EXT_PRESETS,
     get_item_direct, get_collection_items, filter_items,
-    check_asset_info, browser_url,
+    check_asset_info, browser_url, asset_area,
     stac_item_year, stac_item_area, stac_item_acq_date,
 )
 
@@ -174,10 +174,18 @@ class ItemJsonDialog(tk.Toplevel):
 
 class StacMonitorApp(tk.Tk):
 
-    _COLS      = ("status", "typ", "groesse", "geaendert")
-    _COL_HEADS = {"status": "Status", "typ": "Typ / Ext.",
+    _COLS      = ("sel", "area", "status", "typ", "groesse", "geaendert")
+    _COL_HEADS = {"sel": "Auswahl", "area": "Area", "status": "Status", "typ": "Typ / Ext.",
                   "groesse": "Grösse", "geaendert": "Geändert"}
-    _COL_W     = {"status": 100, "typ": 90, "groesse": 90, "geaendert": 105}
+    _COL_W     = {"sel": 60, "area": 90, "status": 100, "typ": 90,
+                  "groesse": 90, "geaendert": 105}
+
+    # Farbige Emoji-Kreise: Farbe ist fest im Zeichen kodiert und bleibt unabhängig
+    # von der Zeilen-Textfarbe (Status Grün/Rot/Grau, Item Blau) sichtbar –
+    # ttk.Treeview kann sonst nur pro ganzer Zeile, nicht pro Zelle einfärben.
+    _CHK_ON      = "🟢"
+    _CHK_OFF     = "⚪"
+    _CHK_PARTIAL = "🟡"
 
     def __init__(self):
         super().__init__()
@@ -195,6 +203,8 @@ class StacMonitorApp(tk.Tk):
         self._nodes: Dict[str, Dict] = {}
         # Prüfergebnisse: {item_id: {asset_key: {status, size_bytes, last_modified}}}
         self._asset_info: Dict[str, Dict[str, Dict]] = {}
+        # Export-Auswahl je Asset-Knoten (tree_iid → bool). Fehlender Eintrag = gewählt.
+        self._checked: Dict[str, bool] = {}
 
         self._build_ui()
         self._apply_theme(True)
@@ -249,7 +259,7 @@ class StacMonitorApp(tk.Tk):
                    command=self._open_stac_browser).pack(side="left", padx=(0, 12))
 
         self._cred_btn = ttk.Button(sec, text="Credentials laden",
-                                     command=self._load_credentials)
+                                     command=self._load_credentials, style="Amber.TButton")
         self._cred_btn.pack(side="left", padx=(12, 6))
 
         self._cred_lbl = ttk.Label(sec, text="nicht geladen",
@@ -289,6 +299,10 @@ class StacMonitorApp(tk.Tk):
                   font=("Segoe UI", 8), style="Dim.TLabel").grid(
             row=1, column=4, sticky="w", padx=(8, 0), pady=(6, 0))
 
+        # Suchfeld gleich mit dem Default-Auftragstyp vorbefüllen (Radiobutton-Command
+        # feuert sonst erst bei einem tatsächlichen Klick, nicht bei der Vorauswahl).
+        self._on_auftragstyp_change()
+
         # Dateiendung
         ttk.Label(sec, text="Dateiendung:").grid(row=2, column=0, sticky="w", pady=(6, 0))
         ext_frame = ttk.Frame(sec)
@@ -320,7 +334,7 @@ class StacMonitorApp(tk.Tk):
 
         self._collapse_btn = ttk.Button(
             row, text="Alle einklappen", command=self._collapse_all, state="disabled")
-        self._collapse_btn.pack(side="left")
+        self._collapse_btn.pack(side="left", padx=(0, 16))
 
     def _build_stac_functions(self, parent):
         sec = ttk.LabelFrame(parent, text="STAC-Funktionen",
@@ -346,13 +360,24 @@ class StacMonitorApp(tk.Tk):
         frame = ttk.LabelFrame(parent, text="3   Items & Assets",
                                padding=4, style="Section.TLabelframe")
         frame.pack(fill="both", expand=True, pady=(0, 4))
-        frame.rowconfigure(0, weight=1)
+        frame.rowconfigure(1, weight=1)
         frame.columnconfigure(0, weight=1)
+
+        toolbar = ttk.Frame(frame)
+        toolbar.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 4))
+
+        self._select_all_btn = ttk.Button(
+            toolbar, text="Alle auswählen", command=self._select_all, state="disabled")
+        self._select_all_btn.pack(side="left", padx=(0, 4))
+
+        self._deselect_all_btn = ttk.Button(
+            toolbar, text="Alles abwählen", command=self._deselect_all, state="disabled")
+        self._deselect_all_btn.pack(side="left")
 
         self._tree = ttk.Treeview(
             frame, columns=self._COLS, show="tree headings", selectmode="browse")
 
-        self._tree.column("#0", width=430, minwidth=200, stretch=True)
+        self._tree.column("#0", width=320, minwidth=200, stretch=False)
         self._tree.heading("#0", text="Item / Asset")
         for col in self._COLS:
             self._tree.column(col, width=self._COL_W[col],
@@ -363,13 +388,14 @@ class StacMonitorApp(tk.Tk):
         hsb = ttk.Scrollbar(frame, orient="horizontal", command=self._tree.xview)
         self._tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
 
-        self._tree.grid(row=0, column=0, sticky="nsew")
-        vsb.grid(row=0, column=1, sticky="ns")
-        hsb.grid(row=1, column=0, sticky="ew")
+        self._tree.grid(row=1, column=0, sticky="nsew")
+        vsb.grid(row=1, column=1, sticky="ns")
+        hsb.grid(row=2, column=0, sticky="ew")
 
         self._ctx = tk.Menu(self, tearoff=0)
         self._tree.bind("<Button-3>",  self._on_right_click)
         self._tree.bind("<Double-1>",  self._on_double_click)
+        self._tree.bind("<Button-1>",  self._on_tree_click)
 
     def _build_stats(self, parent):
         self._stats_outer = tk.Frame(parent)
@@ -422,6 +448,13 @@ class StacMonitorApp(tk.Tk):
         s.map("TButton",
             background=[("active", T["btn_hover"]), ("pressed", T["sep"])],
             foreground=[("active", T["fg"])],
+            relief=[("pressed", "flat")])
+        s.configure("Amber.TButton",
+            background=T["btn"], foreground=T["warn"],
+            bordercolor=T["sep"], relief="flat", padding=(8, 4), focuscolor=T["panel"])
+        s.map("Amber.TButton",
+            background=[("active", T["btn_hover"]), ("pressed", T["sep"])],
+            foreground=[("active", T["warn"])],
             relief=[("pressed", "flat")])
         s.configure("TRadiobutton",
             background=T["panel"], foreground=T["fg"], focuscolor=T["panel"])
@@ -498,6 +531,7 @@ class StacMonitorApp(tk.Tk):
         self._url_lbl.configure(text=ENVIRONMENTS[self._env_var.get()])
         self._auth = None
         self._cred_lbl.configure(text="nicht geladen")
+        self._cred_btn.configure(style="Amber.TButton")
         self._load_btn.config(state="disabled")
 
     def _open_stac_browser(self, item_id: Optional[str] = None):
@@ -527,6 +561,7 @@ class StacMonitorApp(tk.Tk):
             T = DARK if self._dark else LIGHT
             self._cred_lbl.configure(
                 text=f"Geladen: {creds['username']}", foreground=T["ok"])
+            self._cred_btn.configure(style="TButton")
             self._load_btn.config(state="normal")
             self._log_write(f"[Credentials] {env} – {creds['username']}\n")
         except Exception as exc:
@@ -627,7 +662,6 @@ class StacMonitorApp(tk.Tk):
 
         for item in sorted_items:
             iid     = item["id"]
-            year    = stac_item_year(item)
             area    = stac_item_area(item)
             acq     = stac_item_acq_date(item)
             display = iid[len(_pfx):] if iid.startswith(_pfx) else iid
@@ -644,13 +678,16 @@ class StacMonitorApp(tk.Tk):
 
             total_assets += len(asset_keys)
 
-            meta = "  ".join(p for p in [year, area, acq] if p)
+            meta = "  ".join(p for p in [area, acq] if p)
             label = display + (f"   [{meta}]" if meta else "")
+
+            asset_node_ids = [f"asset::{iid}::{ak}" for ak in asset_keys]
 
             node_id = f"item::{iid}"
             self._tree.insert("", "end", iid=node_id,
                               text=f"  {label}",
-                              values=("", "", f"{len(asset_keys)} Assets", ""),
+                              values=(self._item_check_glyph(asset_node_ids), area,
+                                      "", "", f"{len(asset_keys)} Assets", ""),
                               tags=("item",), open=True)
             self._nodes[node_id] = {"kind": "item", "item_id": iid, "item": item}
 
@@ -660,6 +697,7 @@ class StacMonitorApp(tk.Tk):
                 href     = aval.get("href", "")
                 atype    = aval.get("type", "")
                 ext      = Path(href).suffix if href else ""
+                a_area   = asset_area(aval)
                 info     = item_info.get(ak)
                 sc       = info.get("status")   if info else None
                 sz       = info.get("size_bytes") if info else None
@@ -669,8 +707,8 @@ class StacMonitorApp(tk.Tk):
                 anid = f"asset::{iid}::{ak}"
                 self._tree.insert(node_id, "end", iid=anid,
                                   text=f"        {ak}",
-                                  values=(stxt, ext or atype[:22],
-                                          _fmt_size(sz), _fmt_date(lm)),
+                                  values=(self._chk_glyph(anid), a_area, stxt,
+                                          ext or atype[:22], _fmt_size(sz), _fmt_date(lm)),
                                   tags=(tg,))
                 self._nodes[anid] = {
                     "kind": "asset", "item_id": iid, "asset_key": ak,
@@ -690,6 +728,8 @@ class StacMonitorApp(tk.Tk):
         self._export_csv_btn.config(state=state)
         self._expand_btn.config(state=state)
         self._collapse_btn.config(state=state)
+        self._select_all_btn.config(state=state)
+        self._deselect_all_btn.config(state=state)
 
     def _expand_all(self):
         for node in self._tree.get_children():
@@ -699,27 +739,103 @@ class StacMonitorApp(tk.Tk):
         for node in self._tree.get_children():
             self._tree.item(node, open=False)
 
+    # ── Export-Auswahl (Checkboxen) ───────────────────────────────────────────
+
+    def _is_checked(self, asset_nid: str) -> bool:
+        return self._checked.get(asset_nid, True)
+
+    def _chk_glyph(self, asset_nid: str) -> str:
+        return self._CHK_ON if self._is_checked(asset_nid) else self._CHK_OFF
+
+    def _item_asset_nids(self, item_id: str) -> List[str]:
+        return [nid for nid, d in self._nodes.items()
+                if d["kind"] == "asset" and d["item_id"] == item_id]
+
+    def _item_check_glyph(self, asset_nids: List[str]) -> str:
+        if not asset_nids:
+            return self._CHK_OFF
+        states = [self._is_checked(n) for n in asset_nids]
+        if all(states):
+            return self._CHK_ON
+        if not any(states):
+            return self._CHK_OFF
+        return self._CHK_PARTIAL
+
+    def _refresh_item_glyph(self, item_id: str):
+        item_nid = f"item::{item_id}"
+        if not self._tree.exists(item_nid):
+            return
+        vals = list(self._tree.item(item_nid, "values"))
+        vals[0] = self._item_check_glyph(self._item_asset_nids(item_id))
+        self._tree.item(item_nid, values=vals)
+
+    def _on_tree_click(self, event):
+        if self._tree.identify_region(event.x, event.y) != "cell":
+            return
+        if self._tree.identify_column(event.x) != "#1":  # "sel"-Spalte
+            return
+        row = self._tree.identify_row(event.y)
+        d = self._nodes.get(row)
+        if not d:
+            return
+
+        if d["kind"] == "asset":
+            self._checked[row] = not self._is_checked(row)
+            vals = list(self._tree.item(row, "values"))
+            vals[0] = self._chk_glyph(row)
+            self._tree.item(row, values=vals)
+            self._refresh_item_glyph(d["item_id"])
+        else:  # item: alle zugehörigen Assets gemeinsam (de)selektieren
+            asset_nids = self._item_asset_nids(d["item_id"])
+            new_state  = self._item_check_glyph(asset_nids) != self._CHK_ON
+            for nid in asset_nids:
+                self._checked[nid] = new_state
+                vals = list(self._tree.item(nid, "values"))
+                vals[0] = self._chk_glyph(nid)
+                self._tree.item(nid, values=vals)
+            self._refresh_item_glyph(d["item_id"])
+        return "break"
+
+    def _select_all(self):
+        self._set_all_checked(True)
+
+    def _deselect_all(self):
+        self._set_all_checked(False)
+
+    def _set_all_checked(self, state: bool):
+        for nid, d in self._nodes.items():
+            if d["kind"] != "asset":
+                continue
+            self._checked[nid] = state
+            if self._tree.exists(nid):
+                vals = list(self._tree.item(nid, "values"))
+                vals[0] = self._chk_glyph(nid)
+                self._tree.item(nid, values=vals)
+        for nid, d in self._nodes.items():
+            if d["kind"] == "item":
+                self._refresh_item_glyph(d["item_id"])
+
     # ── HEAD-Prüfung ──────────────────────────────────────────────────────────
 
     def _check_assets(self):
         tasks = [
             (d["item_id"], d["asset_key"], d["href"])
             for nid, d in self._nodes.items()
-            if d["kind"] == "asset" and d.get("href")
+            if d["kind"] == "asset" and d.get("href") and self._is_checked(nid)
         ]
         if not tasks:
-            self._log_write("[Prüfung] Keine Assets mit URL.\n")
+            self._log_write("[Prüfung] Keine ausgewählten Assets mit URL.\n")
             return
 
         self._check_btn.config(state="disabled")
-        self._log_write(f"[Prüfung] {len(tasks)} Assets …\n")
+        self._log_write(f"[Prüfung] {len(tasks)} ausgewählte Assets …\n")
 
         # Spinner setzen
         for iid, ak, _ in tasks:
             nid = f"asset::{iid}::{ak}"
             if self._tree.exists(nid):
                 cur = self._tree.item(nid, "values")
-                self._tree.item(nid, values=("⟳", cur[1], "–", "–"),
+                self._tree.item(nid, values=(cur[0], cur[1], "⟳", cur[3], "–", "–"),
                                 tags=("asset_dim",))
 
         threading.Thread(target=self._worker_check, args=(tasks,), daemon=True).start()
@@ -754,14 +870,17 @@ class StacMonitorApp(tk.Tk):
                     err_cnt += 1
 
                 nid = f"asset::{iid}::{ak}"
-                cur_typ = ""
+                cur_sel  = self._chk_glyph(nid)
+                cur_typ  = ""
+                cur_area = ""
                 if self._tree.exists(nid):
-                    cur_typ = self._tree.item(nid, "values")[1]
+                    cur_vals = self._tree.item(nid, "values")
+                    cur_area, cur_typ = cur_vals[1], cur_vals[3]
 
-                self.after(0, lambda n=nid, s=stxt, t=cur_typ,
+                self.after(0, lambda n=nid, sel=cur_sel, s=stxt, t=cur_typ, ar=cur_area,
                            sz_=_fmt_size(sz), lm_=_fmt_date(lm), tag=tg:
                            self._tree.exists(n) and
-                           self._tree.item(n, values=(s, t, sz_, lm_), tags=(tag,)))
+                           self._tree.item(n, values=(sel, ar, s, t, sz_, lm_), tags=(tag,)))
 
                 self._log_write(f"  {ak}  →  {stxt}  {_fmt_size(sz)}\n")
 
@@ -859,11 +978,15 @@ class StacMonitorApp(tk.Tk):
                 if exts and not any(href.lower().endswith(e) or ak.lower().endswith(e)
                                     for e in exts):
                     continue
+                if not self._is_checked(f"asset::{iid}::{ak}"):
+                    continue
                 entry: Dict = {"key": ak, "href": href}
                 if aval.get("type"):
                     entry["media_type"] = aval["type"]
                 if aval.get("title"):
                     entry["title"] = aval["title"]
+                if asset_area(aval):
+                    entry["area"] = asset_area(aval)
                 info = self._asset_info.get(iid, {}).get(ak, {})
                 if info.get("status") is not None:
                     entry["http_status"] = info["status"]
@@ -925,6 +1048,8 @@ class StacMonitorApp(tk.Tk):
                 href = aval.get("href", "")
                 if exts and not any(href.lower().endswith(e) or ak.lower().endswith(e)
                                     for e in exts):
+                    continue
+                if not self._is_checked(f"asset::{iid}::{ak}"):
                     continue
                 info = self._asset_info.get(iid, {}).get(ak, {})
                 rows.append({
