@@ -4,6 +4,15 @@ Read-only Desktop-Tool (Tkinter) zur Überwachung der STAC-Collection
 `ch.swisstopo.spezialbefliegungen` auf INT- und PROD-Umgebung von swisstopo /
 BGDI. Keine Schreib- oder Löschfunktionen.
 
+## GUI
+
+```bash
+python 0_GUI_stac_monitor.py
+```
+
+<img width="1521" height="1282" alt="grafik" src="https://github.com/user-attachments/assets/b0b78151-5eff-4adb-b021-1e98d8498a1b" />
+
+
 ## Funktionen
 
 - Items der Collection laden (alle, gefiltert oder per exakter Item-ID)
