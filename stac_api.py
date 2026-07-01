@@ -5,8 +5,14 @@ stac_api.py  –  STAC API Hilfsfunktionen für ch.swisstopo.spezialbefliegungen
 
 import re
 import requests
+import urllib3
 from urllib.parse import urljoin
 from typing import Dict, List, Optional, Tuple
+
+# verify=False ist im Bundesnetz nötig, da proxy-bvcol.admin.ch HTTPS mit
+# eigenem Zertifikat terminiert (TLS-Interception). Die dadurch bei jedem
+# Request ausgelöste InsecureRequestWarning wird deshalb bewusst unterdrückt.
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 # Firmenproxy für externe Verbindungen (data.geo.admin.ch / sys-data.int.bgdi.ch)
@@ -59,22 +65,30 @@ EXT_PRESETS: List[Tuple[str, List[str]]] = [
 # auflösbar -> nach einmaligem ProxyError auf Direktverbindung umschalten.
 _USE_PROXY: Optional[bool] = None
 
+# Gemeinsame Session für Connection-Pooling (Keep-Alive statt neuem TCP/TLS-
+# Handshake pro Request) – wichtig für Performance bei Pagination und den
+# parallelen HEAD-Checks. requests.Session ist für Multithreading geeignet,
+# solange kein gemeinsamer Zustand (Header etc.) zur Laufzeit verändert wird.
+_SESSION = requests.Session()
+_SESSION.mount("https://", requests.adapters.HTTPAdapter(pool_maxsize=16))
 
-def _request(method, url: str, **kwargs) -> requests.Response:
+
+def _request(method: str, url: str, **kwargs) -> requests.Response:
     global _USE_PROXY
+    call = getattr(_SESSION, method)
     if _USE_PROXY is False:
-        return method(url, proxies=None, **kwargs)
+        return call(url, proxies=None, **kwargs)
     try:
-        r = method(url, proxies=_PROXY, **kwargs)
+        r = call(url, proxies=_PROXY, **kwargs)
         _USE_PROXY = True
         return r
     except requests.exceptions.ProxyError:
         _USE_PROXY = False
-        return method(url, proxies=None, **kwargs)
+        return call(url, proxies=None, **kwargs)
 
 
 def _session_get(url: str, auth: Tuple, params: dict = None) -> requests.Response:
-    return _request(requests.get, url, auth=auth, params=params,
+    return _request("get", url, auth=auth, params=params,
                     verify=False, timeout=(30, 60))
 
 
@@ -126,10 +140,10 @@ def check_asset_info(href: str, auth: Tuple) -> Dict:
     if not href:
         return result
     try:
-        r = _request(requests.head, href, verify=False,
+        r = _request("head", href, verify=False,
                     timeout=(5, 15), allow_redirects=True)
         if r.status_code in (401, 403):
-            r = _request(requests.head, href, auth=auth, verify=False,
+            r = _request("head", href, auth=auth, verify=False,
                         timeout=(5, 15), allow_redirects=True)
         result["status"] = r.status_code
         cl = r.headers.get("Content-Length", "")
