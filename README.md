@@ -28,6 +28,8 @@ python 0_GUI_stac_monitor.py
 - Export der Download-Links als JSON (für Kunden), inkl. Area je Asset, nur
   ausgewählte Assets
 - Export der Asset-Tabelle als CSV (für interne Auswertung), nur ausgewählte Assets
+- Export "Item - STAC Browser Links" als TXT: STAC-Browser-Link je Item plus
+  Liste der ausgewählten Assets (für Kunden-Weitergabe)
 - Item-JSON-Detailansicht, URL in Zwischenablage kopieren / im Browser öffnen
 - STAC Browser öffnen (Collection- oder Item-Deep-Link, für Kunden-Weitergabe)
 - Hell/Dark-Theme
@@ -77,7 +79,8 @@ python 0_GUI_stac_monitor.py
 4. Optional: Auswahl über die Checkbox-Spalte ("Export") anpassen – per
    Klick auf ein Item oder Asset, oder über "Alle auswählen"/"Alles abwählen"
 5. Sektion "STAC-Funktionen": "Assets prüfen (HEAD)" für Status/Grösse/
-   Last-Modified, danach Export als JSON oder CSV (jeweils nur Auswahl)
+   Last-Modified, danach Export als JSON, CSV oder "Item - STAC Browser Links"
+   (jeweils nur Auswahl)
 
 ## Dateien
 
