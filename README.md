@@ -10,7 +10,7 @@ BGDI. Keine Schreib- oder Löschfunktionen.
 python 0_GUI_stac_monitor.py
 ```
 
-<img width="1521" height="1282" alt="grafik" src="https://github.com/user-attachments/assets/b0b78151-5eff-4adb-b021-1e98d8498a1b" />
+<img width="1296" height="1528" alt="grafik" src="https://github.com/user-attachments/assets/3b16c724-d1d5-4281-9c05-7d94f224dbc8" />
 
 
 ## Funktionen
