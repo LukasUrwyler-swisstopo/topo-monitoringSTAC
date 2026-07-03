@@ -16,6 +16,7 @@ Format:      {"INT": {"username": "...", "password": "..."}, "PROD": {...}}
 
 import csv
 import ctypes
+import io
 import json
 import threading
 import concurrent.futures
@@ -162,6 +163,61 @@ class ItemJsonDialog(tk.Toplevel):
         tk.Button(btn_row, text="Item-ID kopieren",
                   bg=T["btn"], fg=T["fg"], relief="flat", padx=10, pady=4,
                   command=_copy_id).pack(side="left")
+        tk.Button(btn_row, text="Schliessen",
+                  bg=T["btn"], fg=T["fg"], relief="flat", padx=10, pady=4,
+                  command=self.destroy).pack(side="right")
+
+        self.transient(parent)
+        self.grab_set()
+
+
+# ─── Export-Vorschau (Anzeigen statt sofort speichern) ───────────────────────
+
+class ExportPreviewDialog(tk.Toplevel):
+    """Zeigt generierten Export-Inhalt an; Speichern erfolgt erst auf Wunsch."""
+
+    def __init__(self, parent, dark: bool, title: str, content: str,
+                 initialfile: str, filetypes: List[Tuple[str, str]],
+                 defaultextension: str, encoding: str = "utf-8",
+                 write_newline: str = None, on_saved=None):
+        super().__init__(parent)
+        T = DARK if dark else LIGHT
+        self.title(title)
+        self.configure(bg=T["root"])
+        self.minsize(720, 520)
+
+        txt = scrolledtext.ScrolledText(
+            self, font=("Cascadia Mono", 9),
+            bg=T["log_bg"], fg=T["log_fg"],
+            insertbackground=T["log_fg"],
+        )
+        txt.pack(fill="both", expand=True, padx=8, pady=8)
+        txt.insert("1.0", content)
+        txt.config(state="disabled")
+
+        btn_row = tk.Frame(self, bg=T["root"])
+        btn_row.pack(fill="x", padx=8, pady=(0, 8))
+
+        def _save():
+            path = filedialog.asksaveasfilename(
+                defaultextension=defaultextension,
+                filetypes=filetypes,
+                title=title,
+                initialfile=initialfile,
+            )
+            if not path:
+                return
+            try:
+                with open(path, "w", newline=write_newline, encoding=encoding) as f:
+                    f.write(content)
+                if on_saved:
+                    on_saved(path)
+            except Exception as exc:
+                messagebox.showerror("Export-Fehler", str(exc))
+
+        tk.Button(btn_row, text="Speichern unter...",
+                  bg=T["btn"], fg=T["fg"], relief="flat", padx=10, pady=4,
+                  command=_save).pack(side="left")
         tk.Button(btn_row, text="Schliessen",
                   bg=T["btn"], fg=T["fg"], relief="flat", padx=10, pady=4,
                   command=self.destroy).pack(side="right")
@@ -963,7 +1019,7 @@ class StacMonitorApp(tk.Tk):
             return
         d = self._nodes.get(row, {})
         if d.get("kind") == "item":
-            ItemJsonDialog(self, d["item"], self._dark)
+            self._open_stac_browser(d.get("item_id"))
         elif d.get("kind") == "asset":
             href = d.get("href", "")
             if href:
@@ -979,14 +1035,6 @@ class StacMonitorApp(tk.Tk):
     def _export_json(self):
         if not self._visible_items:
             messagebox.showwarning("Keine Daten", "Keine Items geladen.")
-            return
-        path = filedialog.asksaveasfilename(
-            defaultextension=".json",
-            filetypes=[("JSON", "*.json"), ("Alle Dateien", "*.*")],
-            title="Download-Links exportieren (JSON)",
-            initialfile=f"stac_links_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-        )
-        if not path:
             return
 
         exts       = self._active_extensions()
@@ -1035,27 +1083,24 @@ class StacMonitorApp(tk.Tk):
             },
             "items": items_out,
         }
-        try:
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(output, f, indent=2, ensure_ascii=False)
+        content = json.dumps(output, indent=2, ensure_ascii=False)
+
+        def _on_saved(path):
             self._log_write(f"[Export] JSON: {path}\n")
             messagebox.showinfo("Export erfolgreich",
                                 f"{len(items_out)} Items  |  "
                                 f"{output['meta']['asset_count']} Assets\n{path}")
-        except Exception as exc:
-            messagebox.showerror("Export-Fehler", str(exc))
+
+        ExportPreviewDialog(
+            self, self._dark, "Download-Links exportieren (JSON)", content,
+            initialfile=f"stac_links_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+            filetypes=[("JSON", "*.json"), ("Alle Dateien", "*.*")],
+            defaultextension=".json", on_saved=_on_saved,
+        )
 
     def _export_csv(self):
         if not self._visible_items:
             messagebox.showwarning("Keine Daten", "Keine Items geladen.")
-            return
-        path = filedialog.asksaveasfilename(
-            defaultextension=".csv",
-            filetypes=[("CSV", "*.csv"), ("Alle Dateien", "*.*")],
-            title="Export CSV",
-            initialfile=f"stac_monitor_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-        )
-        if not path:
             return
 
         exts = self._active_extensions()
@@ -1091,28 +1136,29 @@ class StacMonitorApp(tk.Tk):
         if not rows:
             messagebox.showwarning("Keine Daten", "Keine Assets nach Filter.")
             return
-        try:
-            with open(path, "w", newline="", encoding="utf-8-sig") as f:
-                writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
-                writer.writeheader()
-                writer.writerows(rows)
+
+        sio = io.StringIO(newline="")
+        writer = csv.DictWriter(sio, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+        content = sio.getvalue()
+
+        def _on_saved(path):
             self._log_write(f"[Export] CSV: {path}\n")
             messagebox.showinfo("Export erfolgreich",
                                 f"{len(rows)} Zeilen exportiert.\n{path}")
-        except Exception as exc:
-            messagebox.showerror("Export-Fehler", str(exc))
+
+        ExportPreviewDialog(
+            self, self._dark, "Export CSV", content,
+            initialfile=f"stac_monitor_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            filetypes=[("CSV", "*.csv"), ("Alle Dateien", "*.*")],
+            defaultextension=".csv", encoding="utf-8-sig",
+            write_newline="", on_saved=_on_saved,
+        )
 
     def _export_stac_browser_links(self):
         if not self._visible_items:
             messagebox.showwarning("Keine Daten", "Keine Items geladen.")
-            return
-        path = filedialog.asksaveasfilename(
-            defaultextension=".txt",
-            filetypes=[("Textdatei", "*.txt"), ("Alle Dateien", "*.*")],
-            title="Item - STAC Browser Links exportieren",
-            initialfile=f"item_STAC-Browser-Links_{datetime.now().strftime('%Y-%m-%d_%H%M%S')}.txt",
-        )
-        if not path:
             return
 
         env    = self._env_var.get()
@@ -1123,7 +1169,7 @@ class StacMonitorApp(tk.Tk):
             iid     = item["id"]
             display = iid[len(_pfx):] if iid.startswith(_pfx) else iid
             assets  = item.get("assets", {})
-            asset_keys = []
+            asset_entries = []
             for ak, aval in assets.items():
                 href = aval.get("href", "")
                 if exts and not any(href.lower().endswith(e) or ak.lower().endswith(e)
@@ -1131,24 +1177,38 @@ class StacMonitorApp(tk.Tk):
                     continue
                 if not self._is_checked(f"asset::{iid}::{ak}"):
                     continue
-                asset_keys.append(ak)
-            if not asset_keys:
+                asset_entries.append((ak, href))
+            if not asset_entries:
                 continue
-            lines = [f"{display};", browser_url(env, iid)]
-            lines.extend(f"- {ak}" for ak in sorted(asset_keys))
+            asset_entries.sort(key=lambda e: e[0])
+            lines = [
+                "item:",
+                f"{display};",
+                f"- {browser_url(env, iid)}",
+                "asset:",
+            ]
+            for ak, href in asset_entries:
+                lines.append(f"- {ak}")
+                lines.append(f"  {href}")
             blocks.append("\n".join(lines))
 
         if not blocks:
             messagebox.showwarning("Keine Auswahl", "Keine ausgewählten Assets nach Filter.")
             return
-        try:
-            with open(path, "w", encoding="utf-8") as f:
-                f.write("\n\n\n".join(blocks) + "\n")
+
+        content = "\n\n\n".join(blocks) + "\n"
+
+        def _on_saved(path):
             self._log_write(f"[Export] STAC-Browser-Links: {path}\n")
             messagebox.showinfo("Export erfolgreich",
                                 f"{len(blocks)} Item(s) exportiert.\n{path}")
-        except Exception as exc:
-            messagebox.showerror("Export-Fehler", str(exc))
+
+        ExportPreviewDialog(
+            self, self._dark, "Item - STAC Browser Links exportieren", content,
+            initialfile=f"item_STAC-Browser-Links_{datetime.now().strftime('%Y-%m-%d_%H%M%S')}.txt",
+            filetypes=[("Textdatei", "*.txt"), ("Alle Dateien", "*.*")],
+            defaultextension=".txt", on_saved=_on_saved,
+        )
 
     # ── Logging ───────────────────────────────────────────────────────────────
 
