@@ -1050,6 +1050,9 @@ class StacMonitorApp(tk.Tk):
             href = d.get("href", "")
             if href:
                 webbrowser.open(href)
+        # Verhindert das Standard-Auf-/Zuklappen der Treeview bei Doppelklick
+        # (Ein-/Ausklappen soll nur über den Button oder das Dreieck erfolgen)
+        return "break"
 
     def _clip(self, text: str):
         self.clipboard_clear()
@@ -1208,14 +1211,13 @@ class StacMonitorApp(tk.Tk):
                 continue
             asset_entries.sort(key=lambda e: e[0])
             lines = [
-                "item:",
-                f"{display};",
-                f"- {browser_url(env, iid)}",
-                "asset:",
+                f"item: {display};",
+                f"- {browser_url(env, iid, include_lang=False)}",
+                "asset: ",
             ]
             for ak, href in asset_entries:
-                lines.append(f"- {ak}")
-                lines.append(f"  {href}")
+                lines.append(ak)
+                lines.append(f"- {href}")
             blocks.append("\n".join(lines))
 
         if not blocks:

@@ -36,12 +36,16 @@ _BROWSER_BASE = {
 }
 
 
-def browser_url(env: str, item_id: Optional[str] = None) -> str:
-    """Liefert den STAC-Browser-Link zur Collection, optional zu einem Item."""
+def browser_url(env: str, item_id: Optional[str] = None, include_lang: bool = True) -> str:
+    """Liefert den STAC-Browser-Link zur Collection, optional zu einem Item.
+
+    ``include_lang=False`` liefert den Link ohne "?.language=en"-Anhängsel,
+    z.B. für eine saubere Dokumentation in Exportdateien.
+    """
     url = _BROWSER_BASE[env].format(cid=COLLECTION_ID)
     if item_id:
         url += f"/items/{item_id}"
-    return url + "?.language=en"
+    return (url + "?.language=en") if include_lang else url
 
 AUFTRAGSTYPEN: Dict[str, str] = {
     "KRY (Kryosphäre)":   "kry",
