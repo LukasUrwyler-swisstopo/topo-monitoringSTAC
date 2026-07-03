@@ -247,6 +247,9 @@ class StacMonitorApp(tk.Tk):
     _CHK_OFF     = "○"
     _CHK_PARTIAL = "◐"
 
+    _LOAD_BTN_LABEL    = "ITEM-Liste laden"
+    _SPINNER_FRAMES    = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
     def __init__(self):
         super().__init__()
         self.title("STAC Monitor  —  ch.swisstopo.spezialbefliegungen")
@@ -265,6 +268,10 @@ class StacMonitorApp(tk.Tk):
         self._asset_info: Dict[str, Dict[str, Dict]] = {}
         # Export-Auswahl je Asset-Knoten (tree_iid → bool). Fehlender Eintrag = gewählt.
         self._checked: Dict[str, bool] = {}
+
+        # Lade-Spinner im "ITEM-Liste laden"-Button
+        self._spinner_job: Optional[str] = None
+        self._spinner_idx: int = 0
 
         self._build_ui()
         self._apply_theme(True)
@@ -383,7 +390,7 @@ class StacMonitorApp(tk.Tk):
         row.pack(fill="x", pady=(0, 4))
 
         self._load_btn = ttk.Button(
-            row, text="Laden", command=self._load, state="disabled",
+            row, text=self._LOAD_BTN_LABEL, command=self._load, state="disabled",
             style="AmberBold.TButton")
         self._load_btn.pack(side="left", padx=(0, 16))
 
@@ -688,6 +695,25 @@ class StacMonitorApp(tk.Tk):
             self._export_json_btn.config(state="disabled")
             self._export_csv_btn.config(state="disabled")
             self._export_links_btn.config(state="disabled")
+            self._start_load_spinner()
+        else:
+            self._stop_load_spinner()
+
+    def _start_load_spinner(self):
+        self._spinner_idx = 0
+        self._animate_load_spinner()
+
+    def _animate_load_spinner(self):
+        frame = self._SPINNER_FRAMES[self._spinner_idx % len(self._SPINNER_FRAMES)]
+        self._load_btn.config(text=f"{frame}  Lade Items …")
+        self._spinner_idx += 1
+        self._spinner_job = self.after(120, self._animate_load_spinner)
+
+    def _stop_load_spinner(self):
+        if self._spinner_job is not None:
+            self.after_cancel(self._spinner_job)
+            self._spinner_job = None
+        self._load_btn.config(text=self._LOAD_BTN_LABEL)
 
     # ── Filter + Treeview ─────────────────────────────────────────────────────
 
