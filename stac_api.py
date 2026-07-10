@@ -47,6 +47,32 @@ def browser_url(env: str, item_id: Optional[str] = None, include_lang: bool = Tr
         url += f"/items/{item_id}"
     return (url + "?.language=en") if include_lang else url
 
+
+# Assets, die map.geo.admin.ch als Cloud-Optimized-GeoTIFF (COG-Layer) direkt
+# darstellen kann. Andere Formate (z.B. .copc.laz) unterstützt der Kartenviewer
+# über den "layers=COG|..."-Mechanismus nicht.
+_COG_EXTENSIONS = (".tif", ".tiff")
+
+_MAP_VIEWER_BASE = "https://map.geo.admin.ch/#/map"
+
+
+def is_cog_asset(href: str) -> bool:
+    """Prüft, ob ein Asset-Href als COG-Layer im map.geo.admin.ch-Kartenviewer
+    darstellbar ist (aktuell nur GeoTIFF/.tif/.tiff)."""
+    return href.lower().endswith(_COG_EXTENSIONS)
+
+
+def map_viewer_url(hrefs: List[str]) -> str:
+    """Baut einen map.geo.admin.ch-Link, der die übergebenen COG-Asset-URLs
+    (GeoTIFF) direkt als Layer einblendet (layers=COG|url1;COG|url2;...).
+
+    Die Asset-URLs werden unverändert (nicht prozentkodiert) eingesetzt, da der
+    Kartenviewer die verschachtelte URL innerhalb des Pipe-getrennten
+    Layer-Ausdrucks roh erwartet (analog zu WMS|.../WMTS|...-Syntax).
+    """
+    layers = ";".join(f"COG|{href}" for href in hrefs)
+    return f"{_MAP_VIEWER_BASE}?layers={layers}"
+
 AUFTRAGSTYPEN: Dict[str, str] = {
     "KRY (Kryosphäre)":   "kry",
     "RAM (Rapidmapping)": "ram",
@@ -222,6 +248,126 @@ def stac_item_area(item: Dict) -> str:
         if area:
             return area.upper()
     return ""
+
+
+# ─── STAC-1.0.0-Item-Export ────────────────────────────────────────────────────
+#
+# Die Items dieses Tools stammen bereits als vollständige, valide STAC-1.0.0-
+# Features direkt von der swisstopo-STAC-API (data.geo.admin.ch / sys-data.int.
+# bgdi.ch) – inkl. geometry/bbox bereits in WGS84 (EPSG:4326), wie von der STAC-
+# Spec zwingend gefordert. Es gibt im Tool aktuell keine LV95(EPSG:2056)-Daten.
+# Die folgende Transformation ist daher eine reine Absicherung für den Fall,
+# dass geometry/bbox eines Items (z.B. aus einer künftigen Datenquelle) doch in
+# LV95 vorliegen – im Normalfall ist sie ein No-Op (Passthrough).
+
+# Wertebereich LV95 (EPSG:2056): Easting E ~2.48–2.84 Mio, Northing N ~1.07–1.30
+# Mio. Damit eindeutig von WGS84 Lon/Lat (-180..180 / -90..90) unterscheidbar.
+_LV95_E_RANGE = (2_400_000, 2_900_000)
+_LV95_N_RANGE = (1_000_000, 1_400_000)
+
+
+def _is_lv95_coord(x: float, y: float) -> bool:
+    """Prüft, ob ein Koordinatenpaar plausibel im LV95-Wertebereich (EPSG:2056) liegt."""
+    return _LV95_E_RANGE[0] <= x <= _LV95_E_RANGE[1] and _LV95_N_RANGE[0] <= y <= _LV95_N_RANGE[1]
+
+
+def _lv95_to_wgs84_transform():
+    """Baut die Koordinatentransformation LV95 (EPSG:2056) -> WGS84 (EPSG:4326)
+    via osgeo.osr. Lazy Import: osgeo wird nur geladen, wenn tatsächlich LV95-
+    Koordinaten erkannt werden, damit das Tool ohne osgeo4w-Umgebung lauffähig
+    bleibt, solange keine LV95-Transformation nötig ist."""
+    from osgeo import osr
+    quelle = osr.SpatialReference()
+    quelle.ImportFromEPSG(2056)
+    ziel = osr.SpatialReference()
+    ziel.ImportFromEPSG(4326)
+    # Zwingend setzen: sonst liefert osr (X=lat, Y=lon) statt der von GeoJSON/STAC
+    # verlangten Reihenfolge [lon, lat] -> ohne dies wären geometry/bbox vertauscht.
+    ziel.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+    return osr.CoordinateTransformation(quelle, ziel)
+
+
+def _transform_coords(coords, transform):
+    """Transformiert rekursiv verschachtelte GeoJSON-Koordinaten (Polygon etc.)
+    von LV95 nach WGS84. Koordinaten ausserhalb des LV95-Wertebereichs (bereits
+    WGS84) werden unverändert durchgereicht."""
+    if isinstance(coords[0], (int, float)):
+        x, y = coords[0], coords[1]
+        if _is_lv95_coord(x, y):
+            lon, lat, _ = transform.TransformPoint(x, y)
+            return [lon, lat]
+        return [x, y]
+    return [_transform_coords(c, transform) for c in coords]
+
+
+def _flatten_points(coords):
+    """Liefert alle [lon, lat]-Punkte einer (verschachtelten) GeoJSON-Koordinatenliste."""
+    if isinstance(coords[0], (int, float)):
+        yield coords
+    else:
+        for c in coords:
+            yield from _flatten_points(c)
+
+
+def _ensure_wgs84(geometry: Optional[Dict], bbox: Optional[List[float]]) -> Tuple[Optional[Dict], Optional[List[float]]]:
+    """Stellt sicher, dass geometry/bbox in WGS84 (EPSG:4326) vorliegen, wie von
+    STAC 1.0.0 zwingend gefordert. Normalfall: Koordinaten sind bereits WGS84 ->
+    No-Op. Nur falls die Koordinaten im LV95-Wertebereich liegen, wird via
+    osgeo.osr nach WGS84 transformiert und die bbox neu aus der Geometrie berechnet."""
+    if not geometry or not geometry.get("coordinates"):
+        return geometry, bbox
+
+    coords = geometry["coordinates"]
+    erster_punkt = next(_flatten_points(coords), None)
+    if not erster_punkt or not _is_lv95_coord(erster_punkt[0], erster_punkt[1]):
+        return geometry, bbox
+
+    transform = _lv95_to_wgs84_transform()
+    neue_coords = _transform_coords(coords, transform)
+    neue_geometry = {**geometry, "coordinates": neue_coords}
+    punkte = list(_flatten_points(neue_coords))
+    lons = [p[0] for p in punkte]
+    lats = [p[1] for p in punkte]
+    neue_bbox = [min(lons), min(lats), max(lons), max(lats)]
+    return neue_geometry, neue_bbox
+
+
+def build_stac_item(item: Dict, assets: Dict) -> Dict:
+    """Baut ein valides STAC-1.0.0-Item (GeoJSON Feature) für den Export.
+
+    Übernimmt die STAC-Pflichtfelder aus dem Original-Item (das bereits ein
+    valides Item der swisstopo-API ist) und ersetzt nur "assets" durch die vom
+    Aufrufer gefilterte Auswahl (z.B. Extension-/Checkbox-Filter im GUI).
+    Die interne Datenhaltung des Tools bleibt davon unberührt.
+    """
+    geometry, bbox = _ensure_wgs84(item.get("geometry"), item.get("bbox"))
+
+    properties = dict(item.get("properties", {}))
+    if not properties.get("datetime"):
+        # Fallback: Aufnahmedatum aus der Item-ID (siehe stac_item_acq_date),
+        # als ISO-8601-UTC-Datetime gemäss STAC-Vorgabe.
+        acq = stac_item_acq_date(item)
+        properties["datetime"] = f"{acq}T00:00:00Z" if acq else None
+
+    stac_item: Dict = {
+        # Fest auf "1.0.0", unabhängig von der Quell-API-Version (der swisstopo-
+        # API-Endpunkt liefert aktuell "0.9.0" in stac_version, obwohl die
+        # Item-Struktur bereits 1.0.0-kompatibel ist) – der Export soll immer
+        # ein STAC-1.0.0-Item deklarieren.
+        "type":         "Feature",
+        "stac_version": "1.0.0",
+        "id":           item.get("id"),
+        "geometry":     geometry,
+        "bbox":         bbox,
+        "properties":   properties,
+        "links":        item.get("links", []),
+        "assets":       assets,
+    }
+    if item.get("collection"):
+        stac_item["collection"] = item["collection"]
+    if item.get("stac_extensions"):
+        stac_item["stac_extensions"] = item["stac_extensions"]
+    return stac_item
 
 
 if __name__ == "__main__":

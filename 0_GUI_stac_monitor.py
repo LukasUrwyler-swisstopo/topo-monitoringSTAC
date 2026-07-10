@@ -34,6 +34,7 @@ from stac_api import (
     get_item_direct, get_collection_items, filter_items,
     check_asset_info, browser_url, asset_area,
     stac_item_year, stac_item_area, stac_item_acq_date,
+    build_stac_item, is_cog_asset, map_viewer_url,
 )
 
 
@@ -236,18 +237,20 @@ class StacMonitorApp(tk.Tk):
     _COL_W     = {"sel": 60, "area": 90, "status": 100, "typ": 90,
                   "groesse": 90, "geaendert": 105}
 
-    # Kreis-Glyphen aus dem Unicode-BMP-Bereich (Geometric Shapes, U+25xx):
-    # Zustand wird über die Form kodiert, nicht über Emoji-Farbe – dadurch
-    # unabhängig von der Zeilen-Textfarbe sichtbar. Farbige Emoji-Kreise
+    # Kreis-Glyphen aus dem Unicode-BMP-Bereich (Geometric Shapes, U+25xx/U+2Bxx),
+    # etwas grösser als die ursprünglichen ●/○-Zeichen. Farbige Emoji-Kreise
     # (z.B. 🟢/🟡, U+1F7Ex) liegen ausserhalb der BMP (>U+FFFF) und lassen
     # manche Tcl/Tk-Builds (z.B. Python 3.6 auf Windows) mit
     # "character U+... is above the range (U+0000-U+FFFF) allowed by Tcl"
-    # abstürzen.
-    _CHK_ON      = "●"
-    _CHK_OFF     = "○"
+    # abstürzen – deshalb ausschliesslich BMP-Zeichen. Die Amber-Einfärbung bei
+    # Auswahl erfolgt stattdessen über Zeilen-Tags (siehe _asset_tag/_item_tag),
+    # da ttk.Treeview keine Einzelzell-Farbe kennt, nur zeilenweise Tags.
+    _CHK_ON      = "⬤"
+    _CHK_OFF     = "◯"
     _CHK_PARTIAL = "◐"
 
     _LOAD_BTN_LABEL    = "ITEM-Liste laden"
+    _RELOAD_BTN_LABEL  = "ITEM-Liste aktualisieren"
     _SPINNER_FRAMES    = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
     def __init__(self):
@@ -261,6 +264,7 @@ class StacMonitorApp(tk.Tk):
 
         self._all_items: List[Dict] = []
         self._visible_items: List[Dict] = []
+        self._items_loaded_once: bool = False
 
         # Baum-Metadaten: tree_iid → dict mit kind/item_id/asset_key/href/item
         self._nodes: Dict[str, Dict] = {}
@@ -427,7 +431,12 @@ class StacMonitorApp(tk.Tk):
         self._export_links_btn = ttk.Button(
             sec, text="Item - STAC Browser Links",
             command=self._export_stac_browser_links, state="disabled")
-        self._export_links_btn.pack(side="left")
+        self._export_links_btn.pack(side="left", padx=(0, 4))
+
+        self._map_viewer_btn = ttk.Button(
+            sec, text="Link auf Kartenviewer",
+            command=self._open_map_viewer, state="disabled")
+        self._map_viewer_btn.pack(side="left")
 
     def _build_tree(self, parent):
         frame = ttk.LabelFrame(parent, text="3   Items & Assets",
@@ -569,6 +578,12 @@ class StacMonitorApp(tk.Tk):
 
         self._tree.tag_configure("item",
             foreground=T["tree_item"], font=("Segoe UI", 9, "bold"))
+        # Amber (bestehende warn-Akzentfarbe), sobald vollständig ausgewählt –
+        # bei Assets nur solange noch kein HTTP-Prüfergebnis vorliegt, damit die
+        # aussagekräftigere ok/err/warn-Statusfarbe nach der Prüfung erhalten bleibt.
+        self._tree.tag_configure("item_selected",
+            foreground=T["tree_warn"], font=("Segoe UI", 9, "bold"))
+        self._tree.tag_configure("asset_selected", foreground=T["tree_warn"])
         self._tree.tag_configure("asset_ok",   foreground=T["tree_ok"])
         self._tree.tag_configure("asset_err",  foreground=T["tree_err"])
         self._tree.tag_configure("asset_warn", foreground=T["tree_warn"])
@@ -657,9 +672,11 @@ class StacMonitorApp(tk.Tk):
         if not self._auth:
             return
         self._load_btn.configure(style="TButton")
-        self._set_busy(True)
         self._all_items.clear()
         self._asset_info.clear()
+        self._visible_items = []
+        self._populate_tree([], [])  # Bestehende Liste sofort leeren, bevor neu geladen wird
+        self._set_busy(True)
         search = self._search_var.get().strip()
         threading.Thread(target=self._worker_load, args=(search,), daemon=True).start()
 
@@ -695,6 +712,7 @@ class StacMonitorApp(tk.Tk):
             self._export_json_btn.config(state="disabled")
             self._export_csv_btn.config(state="disabled")
             self._export_links_btn.config(state="disabled")
+            self._map_viewer_btn.config(state="disabled")
             self._start_load_spinner()
         else:
             self._stop_load_spinner()
@@ -713,7 +731,8 @@ class StacMonitorApp(tk.Tk):
         if self._spinner_job is not None:
             self.after_cancel(self._spinner_job)
             self._spinner_job = None
-        self._load_btn.config(text=self._LOAD_BTN_LABEL)
+        label = self._RELOAD_BTN_LABEL if self._items_loaded_once else self._LOAD_BTN_LABEL
+        self._load_btn.config(text=label)
 
     # ── Filter + Treeview ─────────────────────────────────────────────────────
 
@@ -729,6 +748,7 @@ class StacMonitorApp(tk.Tk):
     def _apply_filters(self):
         if not self._all_items:
             return
+        self._items_loaded_once = True
         year   = self._year_var.get().strip()
         search = self._search_var.get().strip()
         exts   = self._active_extensions()
@@ -786,12 +806,13 @@ class StacMonitorApp(tk.Tk):
 
             asset_node_ids = [f"asset::{iid}::{ak}" for ak in asset_keys]
 
-            node_id = f"item::{iid}"
+            node_id    = f"item::{iid}"
+            item_glyph = self._item_check_glyph(asset_node_ids)
             self._tree.insert("", "end", iid=node_id,
                               text=f"  {label}",
-                              values=(self._item_check_glyph(asset_node_ids), area,
+                              values=(item_glyph, area,
                                       "", "", f"{len(asset_keys)} Assets", ""),
-                              tags=("item",), open=True)
+                              tags=(self._item_tag(item_glyph == self._CHK_ON),), open=True)
             self._nodes[node_id] = {"kind": "item", "item_id": iid, "item": item}
 
             item_info = self._asset_info.get(iid, {})
@@ -812,7 +833,7 @@ class StacMonitorApp(tk.Tk):
                                   text=f"        {ak}",
                                   values=(self._chk_glyph(anid), a_area, stxt,
                                           ext or atype[:22], _fmt_size(sz), _fmt_date(lm)),
-                                  tags=(tg,))
+                                  tags=(self._asset_tag(self._is_checked(anid), tg),))
                 self._nodes[anid] = {
                     "kind": "asset", "item_id": iid, "asset_key": ak,
                     "href": href, "item": item,
@@ -830,6 +851,7 @@ class StacMonitorApp(tk.Tk):
         self._export_json_btn.config(state=state)
         self._export_csv_btn.config(state=state)
         self._export_links_btn.config(state=state)
+        self._map_viewer_btn.config(state=state)
         self._expand_btn.config(state=state)
         self._collapse_btn.config(state=state)
         self._select_all_btn.config(state=state)
@@ -846,7 +868,9 @@ class StacMonitorApp(tk.Tk):
     # ── Export-Auswahl (Checkboxen) ───────────────────────────────────────────
 
     def _is_checked(self, asset_nid: str) -> bool:
-        return self._checked.get(asset_nid, True)
+        # Default: abgewählt – Nutzer wählt Assets/Items bewusst für Export/
+        # Kartenviewer aus, statt sie aktiv abzuwählen.
+        return self._checked.get(asset_nid, False)
 
     def _chk_glyph(self, asset_nid: str) -> str:
         return self._CHK_ON if self._is_checked(asset_nid) else self._CHK_OFF
@@ -865,13 +889,33 @@ class StacMonitorApp(tk.Tk):
             return self._CHK_OFF
         return self._CHK_PARTIAL
 
+    def _asset_status_tag(self, asset_nid: str) -> str:
+        """HTTP-Prüfstatus-Tag eines Assets, unabhängig vom Auswahlstatus."""
+        d    = self._nodes.get(asset_nid, {})
+        info = self._asset_info.get(d.get("item_id"), {}).get(d.get("asset_key"))
+        sc   = info.get("status") if info else None
+        _, tag = _status_label(sc)
+        return tag
+
+    def _asset_tag(self, checked: bool, status_tag: str) -> str:
+        """Zeilen-Tag für ein Asset: amber, wenn ausgewählt und noch nicht
+        HTTP-geprüft; sonst der Prüfstatus-Tag unverändert."""
+        return "asset_selected" if checked and status_tag == "asset_dim" else status_tag
+
+    def _item_tag(self, all_checked: bool) -> str:
+        """Zeilen-Tag für ein Item: amber, wenn alle Assets ausgewählt sind,
+        sonst die bisherige Item-Kennfarbe."""
+        return "item_selected" if all_checked else "item"
+
     def _refresh_item_glyph(self, item_id: str):
         item_nid = f"item::{item_id}"
         if not self._tree.exists(item_nid):
             return
-        vals = list(self._tree.item(item_nid, "values"))
-        vals[0] = self._item_check_glyph(self._item_asset_nids(item_id))
-        self._tree.item(item_nid, values=vals)
+        glyph = self._item_check_glyph(self._item_asset_nids(item_id))
+        vals  = list(self._tree.item(item_nid, "values"))
+        vals[0] = glyph
+        self._tree.item(item_nid, values=vals,
+                        tags=(self._item_tag(glyph == self._CHK_ON),))
 
     def _on_tree_click(self, event):
         if self._tree.identify_region(event.x, event.y) != "cell":
@@ -887,7 +931,8 @@ class StacMonitorApp(tk.Tk):
             self._checked[row] = not self._is_checked(row)
             vals = list(self._tree.item(row, "values"))
             vals[0] = self._chk_glyph(row)
-            self._tree.item(row, values=vals)
+            row_tag = self._asset_tag(self._checked[row], self._asset_status_tag(row))
+            self._tree.item(row, values=vals, tags=(row_tag,))
             self._refresh_item_glyph(d["item_id"])
         else:  # item: alle zugehörigen Assets gemeinsam (de)selektieren
             asset_nids = self._item_asset_nids(d["item_id"])
@@ -896,7 +941,8 @@ class StacMonitorApp(tk.Tk):
                 self._checked[nid] = new_state
                 vals = list(self._tree.item(nid, "values"))
                 vals[0] = self._chk_glyph(nid)
-                self._tree.item(nid, values=vals)
+                row_tag = self._asset_tag(new_state, self._asset_status_tag(nid))
+                self._tree.item(nid, values=vals, tags=(row_tag,))
             self._refresh_item_glyph(d["item_id"])
         return "break"
 
@@ -914,7 +960,8 @@ class StacMonitorApp(tk.Tk):
             if self._tree.exists(nid):
                 vals = list(self._tree.item(nid, "values"))
                 vals[0] = self._chk_glyph(nid)
-                self._tree.item(nid, values=vals)
+                row_tag = self._asset_tag(state, self._asset_status_tag(nid))
+                self._tree.item(nid, values=vals, tags=(row_tag,))
         for nid, d in self._nodes.items():
             if d["kind"] == "item":
                 self._refresh_item_glyph(d["item_id"])
@@ -1068,10 +1115,11 @@ class StacMonitorApp(tk.Tk):
 
         exts       = self._active_extensions()
         items_out  = []
+        asset_count = 0
         for item in self._visible_items:
             iid    = item["id"]
             assets = item.get("assets", {})
-            asset_list = []
+            assets_out: Dict = {}
             for ak, aval in assets.items():
                 href = aval.get("href", "")
                 if exts and not any(href.lower().endswith(e) or ak.lower().endswith(e)
@@ -1079,38 +1127,18 @@ class StacMonitorApp(tk.Tk):
                     continue
                 if not self._is_checked(f"asset::{iid}::{ak}"):
                     continue
-                entry: Dict = {"key": ak, "href": href}
-                if aval.get("type"):
-                    entry["media_type"] = aval["type"]
-                if aval.get("title"):
-                    entry["title"] = aval["title"]
-                if asset_area(aval):
-                    entry["area"] = asset_area(aval)
-                info = self._asset_info.get(iid, {}).get(ak, {})
-                if info.get("status") is not None:
-                    entry["http_status"] = info["status"]
-                if info.get("size_bytes") is not None:
-                    entry["size_bytes"] = info["size_bytes"]
-                asset_list.append(entry)
-            if not asset_list:
+                assets_out[ak] = aval
+            if not assets_out:
                 continue
-            items_out.append({
-                "item_id":  iid,
-                "acq_date": stac_item_acq_date(item),
-                "area":     stac_item_area(item),
-                "assets":   asset_list,
-            })
+            items_out.append(build_stac_item(item, assets_out))
+            asset_count += len(assets_out)
 
+        # STAC-ItemCollection: Standardformat für einen Export mehrerer valider
+        # STAC-1.0.0-Items (analog zur Struktur, die auch die STAC-API selbst
+        # bei /items bzw. /search zurückgibt).
         output = {
-            "meta": {
-                "export_date":  datetime.now().isoformat(timespec="seconds"),
-                "environment":  self._env_var.get(),
-                "collection":   COLLECTION_ID,
-                "tool":         "STAC Monitor",
-                "item_count":   len(items_out),
-                "asset_count":  sum(len(it["assets"]) for it in items_out),
-            },
-            "items": items_out,
+            "type":     "FeatureCollection",
+            "features": items_out,
         }
         content = json.dumps(output, indent=2, ensure_ascii=False)
 
@@ -1118,7 +1146,7 @@ class StacMonitorApp(tk.Tk):
             self._log_write(f"[Export] JSON: {path}\n")
             messagebox.showinfo("Export erfolgreich",
                                 f"{len(items_out)} Items  |  "
-                                f"{output['meta']['asset_count']} Assets\n{path}")
+                                f"{asset_count} Assets\n{path}")
 
         ExportPreviewDialog(
             self, self._dark, "Download-Links exportieren (JSON)", content,
@@ -1237,6 +1265,41 @@ class StacMonitorApp(tk.Tk):
             filetypes=[("Textdatei", "*.txt"), ("Alle Dateien", "*.*")],
             defaultextension=".txt", on_saved=_on_saved,
         )
+
+    def _open_map_viewer(self):
+        if not self._visible_items:
+            messagebox.showwarning("Keine Daten", "Keine Items geladen.")
+            return
+
+        exts    = self._active_extensions()
+        hrefs   = []
+        skipped = 0
+        for item in self._visible_items:
+            iid    = item["id"]
+            assets = item.get("assets", {})
+            for ak, aval in assets.items():
+                href = aval.get("href", "")
+                if exts and not any(href.lower().endswith(e) or ak.lower().endswith(e)
+                                    for e in exts):
+                    continue
+                if not self._is_checked(f"asset::{iid}::{ak}"):
+                    continue
+                if not is_cog_asset(href):
+                    skipped += 1
+                    continue
+                hrefs.append(href)
+
+        if not hrefs:
+            messagebox.showwarning(
+                "Keine COG-Assets",
+                "Keine ausgewählten Assets sind GeoTIFF (.tif/.tiff) und damit "
+                "als Layer im Kartenviewer darstellbar.")
+            return
+
+        url = map_viewer_url(hrefs)
+        webbrowser.open(url)
+        hinweis = f"  ({skipped} nicht-COG Asset(s) übersprungen)" if skipped else ""
+        self._log_write(f"[Kartenviewer] {len(hrefs)} Layer geöffnet{hinweis}\n{url}\n")
 
     # ── Logging ───────────────────────────────────────────────────────────────
 
