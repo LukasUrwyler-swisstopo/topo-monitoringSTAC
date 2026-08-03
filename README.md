@@ -29,14 +29,14 @@ python 0_GUI_stac_monitor.py
   Status 200 aus (Items ohne Fehler verschwinden ganz); leert beim Umschalten
   die bisherige Auswahl, aktiv erst nach dem ersten Prüflauf
 - Statistik: OK / Fehler / Gesamtgrösse geprüfter Assets
-- Export der Download-Links als JSON (für Kunden), inkl. Area je Asset, nur
+- Export der Download-Links als JSON, inkl. Area je Asset, nur
   ausgewählte Assets
 - Export der Asset-Tabelle als CSV (für interne Auswertung), nur ausgewählte Assets
-- Export "Item - STAC Browser Links" als TXT: STAC-Browser-Link je Item plus
+- "Export STAC Browser Links" als TXT: STAC-Browser-Link je Item plus
   Liste der ausgewählten Assets (für Kunden-Weitergabe)
 - Item-JSON-Detailansicht, URL in Zwischenablage kopieren / im Browser öffnen
 - STAC Browser öffnen (Collection- oder Item-Deep-Link, für Kunden-Weitergabe)
-- "Viewer-Fenster öffnen" / "Link auf Kartenviewer": zeigen COG-Assets
+- "GUI Viewer öffnen" / "Link auf Kartenviewer": zeigen COG-Assets
   (.tif/.tiff) direkt in map.geo.admin.ch; bei EBO/EBN-Fotos (.jpg) stattdessen
   automatisch das zugehörige Tages-KML (Item mit fixer Zeit 23595900), da die
   Einzelfotos selbst nicht darstellbar sind. "Viewer-Fenster öffnen" ist ein
