@@ -320,7 +320,7 @@ class StacMonitorApp(tk.Tk):
     _COLS      = ("sel", "area", "status", "typ", "groesse", "geaendert")
     _COL_HEADS = {"sel": "Auswahl", "area": "Area", "status": "Status", "typ": "Typ / Ext.",
                   "groesse": "Grösse", "geaendert": "Geändert"}
-    _COL_W     = {"sel": 60, "area": 90, "status": 100, "typ": 90,
+    _COL_W     = {"sel": 90, "area": 180, "status": 100, "typ": 90,
                   "groesse": 90, "geaendert": 105}
 
     # Kreis-Glyphen aus dem Unicode-BMP-Bereich (Geometric Shapes, U+25xx/U+2Bxx),
@@ -526,26 +526,23 @@ class StacMonitorApp(tk.Tk):
 
         self._export_csv_btn = ttk.Button(
             row2, text="Export CSV", command=self._export_csv, state="disabled")
-        self._export_csv_btn.pack(side="left")
+        self._export_csv_btn.pack(side="left", padx=(0, 4))
+
+        self._export_links_btn = ttk.Button(
+            row2, text="Export STAC Browser Links",
+            command=self._export_stac_browser_links, state="disabled")
+        self._export_links_btn.pack(side="left", padx=(0, 4))
 
         row3 = ttk.Frame(sec)
         row3.pack(side="top", anchor="w", pady=(6, 0))
 
-        self._export_links_btn = ttk.Button(
-            row3, text="Item - STAC Browser Links",
-            command=self._export_stac_browser_links, state="disabled")
-        self._export_links_btn.pack(side="left", padx=(0, 4))
-
         self._map_viewer_btn = ttk.Button(
             row3, text="Link auf Kartenviewer",
             command=self._open_map_viewer, state="disabled")
-        self._map_viewer_btn.pack(side="left")
-
-        row4 = ttk.Frame(sec)
-        row4.pack(side="top", anchor="w", pady=(6, 0))
+        self._map_viewer_btn.pack(side="left", padx=(0, 4))
 
         self._viewer_win_btn = ttk.Button(
-            row4, text="Viewer-Fenster öffnen",
+            row3, text="GUI Viewer öffnen",
             command=self._open_viewer_window, state="disabled")
         self._viewer_win_btn.pack(side="left")
 
@@ -600,7 +597,7 @@ class StacMonitorApp(tk.Tk):
         self._tree = ttk.Treeview(
             frame, columns=self._COLS, show="tree headings", selectmode="browse")
 
-        self._tree.column("#0", width=320, minwidth=200, stretch=False)
+        self._tree.column("#0", width=620, minwidth=500, stretch=False)
         self._tree.heading("#0", text="Item / Asset")
         for col in self._COLS:
             self._tree.column(col, width=self._COL_W[col],
