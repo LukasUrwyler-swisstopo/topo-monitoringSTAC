@@ -3,6 +3,7 @@ stac_api.py  –  STAC API Hilfsfunktionen für ch.swisstopo.spezialbefliegungen
 (Monitoring-Version: read-only, keine Delete-Funktionen)
 """
 
+import math
 import re
 import requests
 import urllib3
@@ -62,16 +63,132 @@ def is_cog_asset(href: str) -> bool:
     return href.lower().endswith(_COG_EXTENSIONS)
 
 
-def map_viewer_url(hrefs: List[str]) -> str:
-    """Baut einen map.geo.admin.ch-Link, der die übergebenen COG-Asset-URLs
-    (GeoTIFF) direkt als Layer einblendet (layers=COG|url1;COG|url2;...).
+# EBO/EBN-Fotos (Einzelbild-Oblique/-Nadir) liegen als .jpg vor und sind selbst
+# nicht im Kartenviewer darstellbar. Zu jedem Tag gibt es aber ein separates
+# "Tagesübersicht"-Item mit fester Zeit "23595900" (23:59:59, unabhängig vom
+# Zeitpunkt der einzelnen Fotos) und einem KML-Asset, das alle Fotos dieses
+# Tages als Platzhalter enthält – dieses KML wird stattdessen angezeigt.
+_EBO_EBN_ASSET_RE  = re.compile(r"-(ebo|ebn)-photo\.jpg$", re.IGNORECASE)
+_ITEM_ID_TIME_RE   = re.compile(r"^(?P<prefix>.+t)\d+$", re.IGNORECASE)
+_KML_DAILY_SUFFIX  = "23595900"
 
-    Die Asset-URLs werden unverändert (nicht prozentkodiert) eingesetzt, da der
-    Kartenviewer die verschachtelte URL innerhalb des Pipe-getrennten
+
+def is_ebo_ebn_asset(name: str) -> bool:
+    """Prüft, ob ein Asset-Key/Href ein EBO- oder EBN-Einzelfoto (.jpg) ist."""
+    return bool(_EBO_EBN_ASSET_RE.search(name or ""))
+
+
+_THUMBNAIL_RE = re.compile(r"thumbnail", re.IGNORECASE)
+
+
+def is_thumbnail_asset(name: str) -> bool:
+    """Prüft, ob ein Asset-Key/Href ein Thumbnail ist (z.B. Asset-Key
+    "thumbnail" oder Href "...-thumbnail.jpg"). Thumbnails werden bei der
+    HTTP-HEAD-Prüfung übersprungen, da sie die Prüfung stark verlangsamen
+    (viele kleine Zusatzdateien) und für die eigentliche Datenkontrolle
+    irrelevant sind."""
+    return bool(_THUMBNAIL_RE.search(name or ""))
+
+
+def ebo_ebn_kml_item_id(item_id: str) -> Optional[str]:
+    """Leitet aus einer EBO/EBN-Foto-Item-ID (z.B. "ram-2024-06-22t07004200")
+    die ID des zugehörigen Tagesübersicht-Items mit dem KML-Asset ab
+    (z.B. "ram-2024-06-22t23595900"). None, falls das Muster nicht passt."""
+    m = _ITEM_ID_TIME_RE.match(item_id or "")
+    return f"{m.group('prefix')}{_KML_DAILY_SUFFIX}" if m else None
+
+
+def map_viewer_url(layers: List[str]) -> str:
+    """Baut einen map.geo.admin.ch-Link mit den übergebenen, bereits fertig
+    formatierten Layer-Ausdrücken (z.B. "COG|<href>", "KML|<href>") als Layer
+    (layers=layer1;layer2;...).
+
+    Die Href-Anteile werden unverändert (nicht prozentkodiert) eingesetzt, da
+    der Kartenviewer die verschachtelte URL innerhalb des Pipe-getrennten
     Layer-Ausdrucks roh erwartet (analog zu WMS|.../WMTS|...-Syntax).
     """
-    layers = ";".join(f"COG|{href}" for href in hrefs)
-    return f"{_MAP_VIEWER_BASE}?layers={layers}"
+    return f"{_MAP_VIEWER_BASE}?layers={';'.join(layers)}"
+
+
+_EMBED_VIEWER_BASE = "https://map.geo.admin.ch/#/embed"
+
+# Fixe Auflösungsstufen (m/Pixel) der LV95-Kartenpyramide von map.geo.admin.ch;
+# der URL-Parameter "z" ist ein fraktionaler Index in diese Liste (exponentielle
+# Interpolation zwischen den Stufen, analog zur OpenLayers-Zoomlogik des Viewers).
+_VIEWER_RESOLUTIONS = [
+    4000, 3750, 3500, 3250, 3000, 2750, 2500, 2250, 2000, 1750, 1500, 1250,
+    1000, 750, 650, 500, 250, 100, 50, 20, 10, 5, 2.5, 2, 1.5, 1, 0.5, 0.25, 0.1,
+]
+
+
+def _resolution_to_zoom(resolution: float) -> float:
+    """Wandelt eine gewünschte Auflösung (m/Pixel) in den fraktionalen
+    map.geo.admin.ch Zoom-Level ``z`` um."""
+    res = min(_VIEWER_RESOLUTIONS[0], max(_VIEWER_RESOLUTIONS[-1], resolution))
+    for i in range(len(_VIEWER_RESOLUTIONS) - 1):
+        hi, lo = _VIEWER_RESOLUTIONS[i], _VIEWER_RESOLUTIONS[i + 1]
+        if lo <= res <= hi:
+            return float(i) if hi == lo else i + math.log(hi / res) / math.log(hi / lo)
+    return float(len(_VIEWER_RESOLUTIONS) - 1)
+
+
+def _wgs84_to_lv95(lon: float, lat: float) -> Tuple[float, float]:
+    """Approximationsformel swisstopo (WGS84 -> LV95/EPSG:2056), Genauigkeit
+    ca. 1m – für die Kartenzentrierung im Viewer ausreichend, ohne GDAL/pyproj-
+    Abhängigkeit (die im ausführenden Python nicht garantiert verfügbar sind).
+    Quelle: swisstopo – "Approximate formulas for the transformation between
+    Swiss projection coordinates and WGS84"."""
+    lat_s = lat * 3600
+    lon_s = lon * 3600
+    phi = (lat_s - 169028.66) / 10000
+    lam = (lon_s - 26782.5) / 10000
+
+    e = (2_600_072.37
+         + 211_455.93 * lam
+         - 10_938.51 * lam * phi
+         - 0.36 * lam * phi ** 2
+         - 44.54 * lam ** 3)
+    n = (1_200_147.07
+         + 308_807.95 * phi
+         + 3_745.25 * lam ** 2
+         + 76.63 * phi ** 2
+         - 194.56 * lam ** 2 * phi
+         + 119.79 * phi ** 3)
+    return e, n
+
+
+def embed_viewer_url(item: Dict, layer_expr: str, canvas_w: int, canvas_h: int,
+                      fit_to_bbox: bool = True) -> str:
+    """Baut einen map.geo.admin.ch-Embed-Link (kein Menü/keine Suche, nur Karte
+    mit Pan/Zoom) mit ``layer_expr`` (z.B. "COG|<href>" oder "KML|<href>") als
+    Layer, nach Möglichkeit bereits auf die Item-Bbox gezoomt (grosszügiger
+    Rand, damit das ganze Asset sicher sichtbar ist).
+
+    ``fit_to_bbox=False`` (für KML-Tagesübersichten mit ggf. vielen über ein
+    grosses Gebiet verteilten Platzhaltern, wo die Bbox des einzelnen Foto-
+    Items keine sinnvolle Zoomstufe ergäbe) überspringt die Zoomberechnung und
+    liefert die Standardansicht (Übersicht Schweiz) mit dem Layer."""
+    bbox = item.get("bbox")
+    center_z = ""
+    if fit_to_bbox and bbox and len(bbox) >= 4:
+        x_min, y_min = _wgs84_to_lv95(bbox[0], bbox[1])
+        x_max, y_max = _wgs84_to_lv95(bbox[2], bbox[3])
+        cx, cy = (x_min + x_max) / 2, (y_min + y_max) / 2
+        if _is_lv95_coord(cx, cy):
+            width_m    = max(abs(x_max - x_min), 50.0)
+            height_m   = max(abs(y_max - y_min), 50.0)
+            # Faktor 2.0 (statt einer knappen Bbox-Passform): deckt sowohl
+            # den gewünschten Rand um das Asset als auch die anfangs (vor dem
+            # Entfernen der Titelleiste) kleinere Browser-Fensterfläche ab.
+            resolution = max(width_m * 2.0 / max(canvas_w, 1),
+                              height_m * 2.0 / max(canvas_h, 1))
+            # 0.3 Stufen zusätzlich rauszoomen als Sicherheitsmarge gegen
+            # Rundungseffekte des Viewers beim fraktionalen Zoom-Level.
+            z = max(0.0, _resolution_to_zoom(resolution) - 0.3)
+            center_z = f"center={cx:.2f},{cy:.2f}&z={z:.2f}&"
+    return (f"{_EMBED_VIEWER_BASE}?lang=de&{center_z}"
+            f"layers={layer_expr}&bgLayer=ch.swisstopo.pixelkarte-farbe")
+
 
 AUFTRAGSTYPEN: Dict[str, str] = {
     "KRY (Kryosphäre)":   "kry",

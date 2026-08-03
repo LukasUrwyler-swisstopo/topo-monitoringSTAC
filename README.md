@@ -24,6 +24,9 @@ python 0_GUI_stac_monitor.py
   Teilauswahl. Buttons "Alle auswählen" / "Alles abwählen" für Massenauswahl
 - Asset-Status-Prüfung via HTTP HEAD (Statuscode, Dateigrösse, Last-Modified),
   nur für ausgewählte Assets
+- "Nur Fehler-Assets anzeigen": blendet nach einer Prüfung alle Assets mit
+  Status 200 aus (Items ohne Fehler verschwinden ganz); leert beim Umschalten
+  die bisherige Auswahl, aktiv erst nach dem ersten Prüflauf
 - Statistik: OK / Fehler / Gesamtgrösse geprüfter Assets
 - Export der Download-Links als JSON (für Kunden), inkl. Area je Asset, nur
   ausgewählte Assets
@@ -32,13 +35,26 @@ python 0_GUI_stac_monitor.py
   Liste der ausgewählten Assets (für Kunden-Weitergabe)
 - Item-JSON-Detailansicht, URL in Zwischenablage kopieren / im Browser öffnen
 - STAC Browser öffnen (Collection- oder Item-Deep-Link, für Kunden-Weitergabe)
+- "Viewer-Fenster öffnen" / "Link auf Kartenviewer": zeigen COG-Assets
+  (.tif/.tiff) direkt in map.geo.admin.ch; bei EBO/EBN-Fotos (.jpg) stattdessen
+  automatisch das zugehörige Tages-KML (Item mit fixer Zeit 23595900), da die
+  Einzelfotos selbst nicht darstellbar sind. "Viewer-Fenster öffnen" ist ein
+  angedocktes Kartenfenster rechts neben dem Hauptfenster (Chrome, ersatzweise
+  Edge, im App-Modus, menülos, nur Pan/Zoom) – aktiv, sobald genau 1
+  darstellbares Asset ausgewählt ist
 - Hell/Dark-Theme
 
 ## Voraussetzungen
 
-- Python 3.11+
+- Python 3.11+ (funktioniert auch mit 3.6)
 - Paket `requests` (`pip install requests`)
 - Tkinter (in der Standard-Windows-Python-Installation bereits enthalten)
+- Für "Viewer-Fenster öffnen": Google Chrome oder Microsoft Edge (Chrome wird
+  bevorzugt, falls beide vorhanden sind). Das Paket `pywin32` (Fenster-
+  Positionierung) wird beim ersten Start automatisch per pip nachinstalliert,
+  falls noch nicht vorhanden – kein manueller Schritt nötig. Schlägt das
+  fehl (kein pip-/Internetzugriff), bleibt der Button deaktiviert bzw. es
+  erscheint ein Hinweis
 
 ## Einrichtung
 

@@ -16,9 +16,17 @@ Format:      {"INT": {"username": "...", "password": "..."}, "PROD": {...}}
 
 import csv
 import ctypes
+import importlib
 import io
 import json
+import os
+import site
+import subprocess
+import sys
+import sysconfig
+import tempfile
 import threading
+import time
 import concurrent.futures
 import webbrowser
 from datetime import datetime
@@ -34,8 +42,86 @@ from stac_api import (
     get_item_direct, get_collection_items, filter_items,
     check_asset_info, browser_url, asset_area,
     stac_item_year, stac_item_area, stac_item_acq_date,
-    build_stac_item, is_cog_asset, map_viewer_url,
+    build_stac_item, is_cog_asset, is_ebo_ebn_asset, ebo_ebn_kml_item_id,
+    is_thumbnail_asset, map_viewer_url, embed_viewer_url,
 )
+
+# Firmenproxy für pip, falls die direkte Verbindung zu PyPI im Bundesnetz
+# fehlschlägt (analog zum Proxy-Fallback in stac_api.py).
+_PIP_PROXY = "http://proxy-bvcol.admin.ch:8080"
+
+
+def _ensure_win32_modules():
+    """Stellt win32con/win32gui/win32process bereit (für das angedockte
+    Viewer-Fenster). Fehlt pywin32, wird es beim ersten Start automatisch per
+    pip nachinstalliert – kein manuelles "pip install pywin32" nötig. Ein
+    reines "try import, pip install, import" reicht dafür nicht: pywin32 hängt
+    seine Unterordner über eine .pth-Datei in sys.path, die von site.py nur
+    beim Interpreter-Start verarbeitet wird. site.addsitedir() stösst diese
+    Verarbeitung zur Laufzeit erneut an, sodass der Import ohne Neustart des
+    Tools klappt."""
+    try:
+        import win32con, win32gui, win32process
+        return win32con, win32gui, win32process, True
+    except ImportError:
+        pass
+
+    for extra_args in ([], ["--proxy", _PIP_PROXY]):
+        try:
+            subprocess.check_call(
+                [sys.executable, "-m", "pip", "install", "--quiet", "pywin32"] + extra_args,
+                timeout=120)
+            for p in {sysconfig.get_path("purelib"), sysconfig.get_path("platlib")}:
+                site.addsitedir(p)
+            importlib.invalidate_caches()
+            import win32con, win32gui, win32process
+            return win32con, win32gui, win32process, True
+        except Exception:
+            continue
+    return None, None, None, False
+
+
+win32con, win32gui, win32process, _WIN32_AVAILABLE = _ensure_win32_modules()
+
+# App-Modus-fähige Chromium-Browser fürs Viewer-Fenster: Chrome bevorzugt,
+# Edge als Fallback (Firmenumgebung hat oft nur Edge, kein separates Chrome).
+# Beide unterstützen dieselben --app/--window-size/--window-position-Flags
+# und (Chromium-Basis) dieselbe Fensterklasse "Chrome_WidgetWin_1".
+_BROWSER_CANDIDATES = (
+    ("chrome.exe", "Google\\Chrome", (
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    )),
+    ("msedge.exe", "Microsoft\\Edge", (
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+    )),
+)
+
+
+def _find_browser_exe() -> Optional[str]:
+    """Sucht eine app-modus-fähige Browser.exe (Chrome vor Edge). Prüft
+    Standardpfade, das lokale AppData-Verzeichnis (Pro-User-Installation)
+    sowie die Windows "App Paths"-Registry."""
+    for exe_name, vendor_subdir, candidates in _BROWSER_CANDIDATES:
+        for p in candidates:
+            if Path(p).is_file():
+                return p
+        local = os.environ.get("LOCALAPPDATA")
+        if local:
+            p = str(Path(local) / vendor_subdir / "Application" / exe_name)
+            if Path(p).is_file():
+                return p
+        try:
+            import winreg
+            key = rf"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\{exe_name}"
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key) as k:
+                p = winreg.QueryValueEx(k, "")[0]
+                if p and Path(p).is_file():
+                    return p
+        except OSError:
+            pass
+    return None
 
 
 # ─── Farbpaletten ─────────────────────────────────────────────────────────────
@@ -272,13 +358,27 @@ class StacMonitorApp(tk.Tk):
         self._asset_info: Dict[str, Dict[str, Dict]] = {}
         # Export-Auswahl je Asset-Knoten (tree_iid → bool). Fehlender Eintrag = gewählt.
         self._checked: Dict[str, bool] = {}
+        # Wird nach dem ersten "Assets prüfen (HEAD)"-Lauf True -> schaltet den
+        # "Nur Fehler-Assets anzeigen"-Filter frei.
+        self._assets_checked_once: bool = False
 
         # Lade-Spinner im "ITEM-Liste laden"-Button
         self._spinner_job: Optional[str] = None
         self._spinner_idx: int = 0
 
+        # Angedocktes Viewer-Fenster (Chrome im App-Modus, rechts neben dem
+        # Hauptfenster) – Prozess/Fensterhandle des aktuell offenen Viewers.
+        self._viewer_proc: Optional[subprocess.Popen] = None
+        self._viewer_hwnd: Optional[int] = None
+        self._viewer_shown_key: Optional[Tuple[str, str]] = None
+        self._viewer_profile_dir: Optional[str] = None
+        self._reposition_job: Optional[str] = None
+
         self._build_ui()
         self._apply_theme(True)
+
+        self.bind("<Configure>", self._on_main_window_configure)
+        self.protocol("WM_DELETE_WINDOW", self._on_app_close)
 
     # ── UI ────────────────────────────────────────────────────────────────────
 
@@ -316,24 +416,30 @@ class StacMonitorApp(tk.Tk):
                              padding=8, style="Section.TLabelframe")
         sec.pack(fill="x", pady=(0, 4))
 
-        ttk.Label(sec, text="Umgebung:").pack(side="left", padx=(0, 6))
+        row1 = ttk.Frame(sec)
+        row1.pack(side="top", anchor="w")
+
+        ttk.Label(row1, text="Umgebung:").pack(side="left", padx=(0, 6))
         self._env_var = tk.StringVar(value="INT")
         for env in ("INT", "PROD"):
-            ttk.Radiobutton(sec, text=env, variable=self._env_var, value=env,
+            ttk.Radiobutton(row1, text=env, variable=self._env_var, value=env,
                             command=self._on_env_change).pack(side="left", padx=4)
 
-        self._url_lbl = ttk.Label(sec, text=ENVIRONMENTS["INT"],
+        self._url_lbl = ttk.Label(row1, text=ENVIRONMENTS["INT"],
                                    font=("Segoe UI", 8), style="Dim.TLabel")
         self._url_lbl.pack(side="left", padx=12)
 
-        ttk.Button(sec, text="STAC Browser öffnen",
-                   command=self._open_stac_browser).pack(side="left", padx=(0, 12))
+        ttk.Button(row1, text="STAC Browser öffnen",
+                   command=self._open_stac_browser).pack(side="left")
 
-        self._cred_btn = ttk.Button(sec, text="Credentials laden",
+        row2 = ttk.Frame(sec)
+        row2.pack(side="top", anchor="w", pady=(6, 0))
+
+        self._cred_btn = ttk.Button(row2, text="Credentials laden",
                                      command=self._load_credentials, style="Amber.TButton")
-        self._cred_btn.pack(side="left", padx=(12, 6))
+        self._cred_btn.pack(side="left", padx=(0, 6))
 
-        self._cred_lbl = ttk.Label(sec, text="nicht geladen",
+        self._cred_lbl = ttk.Label(row2, text="nicht geladen",
                                     font=("Segoe UI", 9, "italic"), style="Dim.TLabel")
         self._cred_lbl.pack(side="left")
 
@@ -384,7 +490,7 @@ class StacMonitorApp(tk.Tk):
             var.trace_add("write", lambda *_: self._apply_filters())
             self._ext_vars.append((var, exts))
             ttk.Checkbutton(ext_frame, text=label, variable=var).pack(side="left", padx=(0, 10))
-        ttk.Label(ext_frame, text="freies Suffix [optional]:").pack(side="left", padx=(6, 4))
+        ttk.Label(ext_frame, text="Freitext im Dateinamen [optional]:").pack(side="left", padx=(6, 4))
         self._ext_custom_var = tk.StringVar()
         self._ext_custom_var.trace_add("write", lambda *_: self._apply_filters())
         ttk.Entry(ext_frame, textvariable=self._ext_custom_var, width=14).pack(side="left")
@@ -398,45 +504,50 @@ class StacMonitorApp(tk.Tk):
             style="AmberBold.TButton")
         self._load_btn.pack(side="left", padx=(0, 16))
 
-        ttk.Separator(row, orient="vertical").pack(side="left", fill="y", padx=(0, 16))
-
-        self._expand_btn = ttk.Button(
-            row, text="Alle aufklappen", command=self._expand_all, state="disabled")
-        self._expand_btn.pack(side="left", padx=(0, 4))
-
-        self._collapse_btn = ttk.Button(
-            row, text="Alle einklappen", command=self._collapse_all, state="disabled")
-        self._collapse_btn.pack(side="left", padx=(0, 16))
-
     def _build_stac_functions(self, parent):
         sec = ttk.LabelFrame(parent, text="STAC-Funktionen",
                              padding=8, style="Section.TLabelframe")
         sec.pack(fill="x", pady=(0, 4))
 
-        self._check_btn = ttk.Button(
-            sec, text="Assets prüfen  (HEAD)", command=self._check_assets, state="disabled")
-        self._check_btn.pack(side="left", padx=(0, 16))
+        row1 = ttk.Frame(sec)
+        row1.pack(side="top", anchor="w")
 
-        ttk.Separator(sec, orient="vertical").pack(side="left", fill="y", padx=(0, 16))
+        self._check_btn = ttk.Button(
+            row1, text="Assets prüfen  (HEAD)", command=self._check_assets, state="disabled")
+        self._check_btn.pack(side="left")
+
+        row2 = ttk.Frame(sec)
+        row2.pack(side="top", anchor="w", pady=(6, 0))
 
         self._export_json_btn = ttk.Button(
-            sec, text="Export JSON (Kunden-Links)",
+            row2, text="Export JSON",
             command=self._export_json, state="disabled")
         self._export_json_btn.pack(side="left", padx=(0, 4))
 
         self._export_csv_btn = ttk.Button(
-            sec, text="Export CSV", command=self._export_csv, state="disabled")
-        self._export_csv_btn.pack(side="left", padx=(0, 4))
+            row2, text="Export CSV", command=self._export_csv, state="disabled")
+        self._export_csv_btn.pack(side="left")
+
+        row3 = ttk.Frame(sec)
+        row3.pack(side="top", anchor="w", pady=(6, 0))
 
         self._export_links_btn = ttk.Button(
-            sec, text="Item - STAC Browser Links",
+            row3, text="Item - STAC Browser Links",
             command=self._export_stac_browser_links, state="disabled")
         self._export_links_btn.pack(side="left", padx=(0, 4))
 
         self._map_viewer_btn = ttk.Button(
-            sec, text="Link auf Kartenviewer",
+            row3, text="Link auf Kartenviewer",
             command=self._open_map_viewer, state="disabled")
         self._map_viewer_btn.pack(side="left")
+
+        row4 = ttk.Frame(sec)
+        row4.pack(side="top", anchor="w", pady=(6, 0))
+
+        self._viewer_win_btn = ttk.Button(
+            row4, text="Viewer-Fenster öffnen",
+            command=self._open_viewer_window, state="disabled")
+        self._viewer_win_btn.pack(side="left")
 
     def _build_tree(self, parent):
         frame = ttk.LabelFrame(parent, text="3   Items & Assets",
@@ -448,13 +559,43 @@ class StacMonitorApp(tk.Tk):
         toolbar = ttk.Frame(frame)
         toolbar.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 4))
 
+        select_row = ttk.Frame(toolbar)
+        select_row.pack(side="top", anchor="w")
+
+        _btn_w = 16
+
         self._select_all_btn = ttk.Button(
-            toolbar, text="Alle auswählen", command=self._select_all, state="disabled")
+            select_row, text="Alle auswählen", command=self._select_all,
+            state="disabled", width=_btn_w)
         self._select_all_btn.pack(side="left", padx=(0, 4))
 
         self._deselect_all_btn = ttk.Button(
-            toolbar, text="Alles abwählen", command=self._deselect_all, state="disabled")
+            select_row, text="Alles abwählen", command=self._deselect_all,
+            state="disabled", width=_btn_w)
         self._deselect_all_btn.pack(side="left")
+
+        expand_row = ttk.Frame(toolbar)
+        expand_row.pack(side="top", anchor="w", pady=(4, 0))
+
+        self._expand_btn = ttk.Button(
+            expand_row, text="Alle aufklappen", command=self._expand_all,
+            state="disabled", width=_btn_w)
+        self._expand_btn.pack(side="left", padx=(0, 4))
+
+        self._collapse_btn = ttk.Button(
+            expand_row, text="Alle einklappen", command=self._collapse_all,
+            state="disabled", width=_btn_w)
+        self._collapse_btn.pack(side="left")
+
+        error_row = ttk.Frame(toolbar)
+        error_row.pack(side="top", anchor="w", pady=(4, 0))
+
+        self._error_filter_var = tk.BooleanVar(value=False)
+        self._error_filter_btn = ttk.Checkbutton(
+            error_row, text="Assets mit ERRORs anzeigen",
+            variable=self._error_filter_var, command=self._on_error_filter_toggle,
+            state="disabled")
+        self._error_filter_btn.pack(side="left")
 
         self._tree = ttk.Treeview(
             frame, columns=self._COLS, show="tree headings", selectmode="browse")
@@ -675,7 +816,9 @@ class StacMonitorApp(tk.Tk):
         self._all_items.clear()
         self._asset_info.clear()
         self._visible_items = []
-        self._populate_tree([], [])  # Bestehende Liste sofort leeren, bevor neu geladen wird
+        self._assets_checked_once = False
+        self._error_filter_var.set(False)
+        self._populate_tree([], [], [], False)  # Bestehende Liste sofort leeren, bevor neu geladen wird
         self._set_busy(True)
         search = self._search_var.get().strip()
         threading.Thread(target=self._worker_load, args=(search,), daemon=True).start()
@@ -741,36 +884,67 @@ class StacMonitorApp(tk.Tk):
         for var, exts in self._ext_vars:
             if var.get():
                 result.extend(exts)
-        for part in self._ext_custom_var.get().replace(",", " ").split():
-            result.append(part if part.startswith(".") else f".{part}")
         return result
+
+    def _active_terms(self) -> List[str]:
+        return [p.lower() for p in self._ext_custom_var.get().replace(",", " ").split()]
+
+    @staticmethod
+    def _asset_matches(href: str, key: str, exts: List[str], terms: List[str]) -> bool:
+        href_l = href.lower()
+        key_l  = key.lower()
+        if exts and not any(href_l.endswith(e) or key_l.endswith(e) for e in exts):
+            return False
+        if terms and not any(t in href_l or t in key_l for t in terms):
+            return False
+        return True
+
+    def _asset_is_error(self, item_id: str, asset_key: str) -> bool:
+        """True, wenn das Asset bereits per HEAD geprüft wurde und dabei
+        keinen Status 200 hatte. Noch ungeprüfte Assets gelten nicht als
+        Fehler (unbekannt statt fehlerhaft)."""
+        info = self._asset_info.get(item_id, {}).get(asset_key)
+        return bool(info) and info.get("status") != 200
+
+    def _on_error_filter_toggle(self):
+        # Ansicht wechselt (alle Assets <-> nur Fehler) -> bisherige Auswahl
+        # verwerfen, damit keine inzwischen unsichtbaren Assets exportiert/
+        # geprüft werden.
+        self._checked.clear()
+        self._apply_filters()
 
     def _apply_filters(self):
         if not self._all_items:
             return
         self._items_loaded_once = True
-        year   = self._year_var.get().strip()
-        search = self._search_var.get().strip()
-        exts   = self._active_extensions()
+        year        = self._year_var.get().strip()
+        search      = self._search_var.get().strip()
+        exts        = self._active_extensions()
+        terms       = self._active_terms()
+        errors_only = self._error_filter_var.get()
 
         items = self._all_items
         if search:
             items = filter_items(items, search)
         if year:
             items = [it for it in items if stac_item_year(it) == year]
-        if exts:
+        if exts or terms or errors_only:
             def _has_match(it):
+                iid = it["id"]
                 for k, v in it.get("assets", {}).items():
-                    href = v.get("href", "")
-                    if any(href.lower().endswith(e) or k.lower().endswith(e) for e in exts):
-                        return True
+                    if not self._asset_matches(v.get("href", ""), k, exts, terms):
+                        continue
+                    if errors_only and not self._asset_is_error(iid, k):
+                        continue
+                    return True
                 return False
             items = [it for it in items if _has_match(it)]
 
         self._visible_items = items
-        self._populate_tree(items, exts)
+        self._populate_tree(items, exts, terms, errors_only)
 
-    def _populate_tree(self, items: List[Dict], exts: List[str]):
+    def _populate_tree(self, items: List[Dict], exts: List[str], terms: List[str],
+                        errors_only: bool = False):
         self._tree.delete(*self._tree.get_children())
         self._nodes.clear()
 
@@ -790,11 +964,11 @@ class StacMonitorApp(tk.Tk):
             display = iid[len(_pfx):] if iid.startswith(_pfx) else iid
 
             assets = item.get("assets", {})
-            if exts:
+            if exts or terms or errors_only:
                 asset_keys = [
                     k for k, v in assets.items()
-                    if any(v.get("href", "").lower().endswith(e) or k.lower().endswith(e)
-                           for e in exts)
+                    if self._asset_matches(v.get("href", ""), k, exts, terms)
+                    and (not errors_only or self._asset_is_error(iid, k))
                 ]
             else:
                 asset_keys = list(assets.keys())
@@ -852,10 +1026,13 @@ class StacMonitorApp(tk.Tk):
         self._export_csv_btn.config(state=state)
         self._export_links_btn.config(state=state)
         self._map_viewer_btn.config(state=state)
+        self._viewer_win_btn.config(state=state)
         self._expand_btn.config(state=state)
         self._collapse_btn.config(state=state)
         self._select_all_btn.config(state=state)
         self._deselect_all_btn.config(state=state)
+        self._error_filter_btn.config(
+            state="normal" if (on and self._assets_checked_once) else "disabled")
 
     def _expand_all(self):
         for node in self._tree.get_children():
@@ -969,17 +1146,31 @@ class StacMonitorApp(tk.Tk):
     # ── HEAD-Prüfung ──────────────────────────────────────────────────────────
 
     def _check_assets(self):
-        tasks = [
+        checked = [
             (d["item_id"], d["asset_key"], d["href"])
             for nid, d in self._nodes.items()
             if d["kind"] == "asset" and d.get("href") and self._is_checked(nid)
         ]
-        if not tasks:
+        if not checked:
             self._log_write("[Prüfung] Keine ausgewählten Assets mit URL.\n")
+            messagebox.showinfo("Auswahl erforderlich", "Bitte Assets auswählen.")
+            return
+
+        # Thumbnails werden übersprungen: viele kleine Zusatzdateien, die die
+        # Prüfung stark verlangsamen und für die Datenkontrolle irrelevant sind.
+        tasks = [t for t in checked if not is_thumbnail_asset(t[1]) and not is_thumbnail_asset(t[2])]
+        n_thumbs = len(checked) - len(tasks)
+        if not tasks:
+            self._log_write("[Prüfung] Ausgewählte Assets sind ausschliesslich Thumbnails – übersprungen.\n")
+            messagebox.showinfo(
+                "Nur Thumbnails ausgewählt",
+                "Alle ausgewählten Assets sind Thumbnails und werden bei der "
+                "Prüfung übersprungen. Bitte andere Assets auswählen.")
             return
 
         self._check_btn.config(state="disabled")
-        self._log_write(f"[Prüfung] {len(tasks)} ausgewählte Assets …\n")
+        hinweis = f"  ({n_thumbs} Thumbnail(s) übersprungen)" if n_thumbs else ""
+        self._log_write(f"[Prüfung] {len(tasks)} ausgewählte Assets{hinweis} …\n")
 
         # Spinner setzen
         for iid, ak, _ in tasks:
@@ -1033,13 +1224,19 @@ class StacMonitorApp(tk.Tk):
                            self._tree.exists(n) and
                            self._tree.item(n, values=(sel, ar, s, t, sz_, lm_), tags=(tag,)))
 
-                self._log_write(f"  {ak}  →  {stxt}  {_fmt_size(sz)}\n")
+                if sc != 200:
+                    self._log_write(f"  {ak}  →  {stxt}  {_fmt_size(sz)}\n")
 
         self._log_write(
             f"[Prüfung] Fertig: ✓ {ok_cnt}  ✗ {err_cnt}  "
             f"|  Gesamtgrösse (200 OK): {_fmt_size(tot_sz)}\n")
         self.after(0, lambda: self._check_btn.config(state="normal"))
+        self.after(0, self._enable_error_filter_btn)
         self.after(0, lambda: self._refresh_stats(ok_cnt, err_cnt, tot_sz))
+
+    def _enable_error_filter_btn(self):
+        self._assets_checked_once = True
+        self._error_filter_btn.config(state="normal")
 
     def _refresh_stats(self, ok: int, err: int, total_bytes: int):
         n_items  = len(self._visible_items)
@@ -1114,6 +1311,7 @@ class StacMonitorApp(tk.Tk):
             return
 
         exts       = self._active_extensions()
+        terms      = self._active_terms()
         items_out  = []
         asset_count = 0
         for item in self._visible_items:
@@ -1122,8 +1320,7 @@ class StacMonitorApp(tk.Tk):
             assets_out: Dict = {}
             for ak, aval in assets.items():
                 href = aval.get("href", "")
-                if exts and not any(href.lower().endswith(e) or ak.lower().endswith(e)
-                                    for e in exts):
+                if not self._asset_matches(href, ak, exts, terms):
                     continue
                 if not self._is_checked(f"asset::{iid}::{ak}"):
                     continue
@@ -1160,7 +1357,8 @@ class StacMonitorApp(tk.Tk):
             messagebox.showwarning("Keine Daten", "Keine Items geladen.")
             return
 
-        exts = self._active_extensions()
+        exts  = self._active_extensions()
+        terms = self._active_terms()
         rows = []
         for item in self._visible_items:
             iid    = item["id"]
@@ -1170,8 +1368,7 @@ class StacMonitorApp(tk.Tk):
             assets = item.get("assets", {})
             for ak, aval in assets.items():
                 href = aval.get("href", "")
-                if exts and not any(href.lower().endswith(e) or ak.lower().endswith(e)
-                                    for e in exts):
+                if not self._asset_matches(href, ak, exts, terms):
                     continue
                 if not self._is_checked(f"asset::{iid}::{ak}"):
                     continue
@@ -1220,6 +1417,7 @@ class StacMonitorApp(tk.Tk):
 
         env    = self._env_var.get()
         exts   = self._active_extensions()
+        terms  = self._active_terms()
         _pfx   = COLLECTION_ID + "_"
         blocks = []
         for item in self._visible_items:
@@ -1229,8 +1427,7 @@ class StacMonitorApp(tk.Tk):
             asset_entries = []
             for ak, aval in assets.items():
                 href = aval.get("href", "")
-                if exts and not any(href.lower().endswith(e) or ak.lower().endswith(e)
-                                    for e in exts):
+                if not self._asset_matches(href, ak, exts, terms):
                     continue
                 if not self._is_checked(f"asset::{iid}::{ak}"):
                     continue
@@ -1272,34 +1469,263 @@ class StacMonitorApp(tk.Tk):
             return
 
         exts    = self._active_extensions()
-        hrefs   = []
-        skipped = 0
+        terms   = self._active_terms()
+        targets = []
         for item in self._visible_items:
             iid    = item["id"]
             assets = item.get("assets", {})
             for ak, aval in assets.items():
                 href = aval.get("href", "")
-                if exts and not any(href.lower().endswith(e) or ak.lower().endswith(e)
-                                    for e in exts):
+                if not self._asset_matches(href, ak, exts, terms):
                     continue
                 if not self._is_checked(f"asset::{iid}::{ak}"):
                     continue
-                if not is_cog_asset(href):
-                    skipped += 1
-                    continue
-                hrefs.append(href)
+                if is_cog_asset(href) or is_ebo_ebn_asset(ak) or is_ebo_ebn_asset(href):
+                    targets.append((item, ak, href))
 
-        if not hrefs:
+        if not targets:
             messagebox.showwarning(
-                "Keine COG-Assets",
-                "Keine ausgewählten Assets sind GeoTIFF (.tif/.tiff) und damit "
-                "als Layer im Kartenviewer darstellbar.")
+                "Keine darstellbaren Assets",
+                "Keine ausgewählten Assets sind als GeoTIFF (.tif/.tiff) oder als "
+                "EBO/EBN-Foto (zugehöriges Tages-KML) im Kartenviewer darstellbar.")
             return
 
-        url = map_viewer_url(hrefs)
-        webbrowser.open(url)
-        hinweis = f"  ({skipped} nicht-COG Asset(s) übersprungen)" if skipped else ""
-        self._log_write(f"[Kartenviewer] {len(hrefs)} Layer geöffnet{hinweis}\n{url}\n")
+        self._log_write(f"[Kartenviewer] Löse Layer für {len(targets)} Asset(s) auf …\n")
+        threading.Thread(target=self._worker_open_map_viewer,
+                          args=(targets,), daemon=True).start()
+
+    def _worker_open_map_viewer(self, targets: List[Tuple[Dict, str, str]]):
+        layers   = []
+        seen_kml = set()
+        skipped  = 0
+        for item, _ak, href in targets:
+            if is_cog_asset(href):
+                layers.append(f"COG|{href}")
+                continue
+            kml_href = self._find_ebo_ebn_kml_href(item)
+            if kml_href and kml_href not in seen_kml:
+                seen_kml.add(kml_href)
+                layers.append(f"KML|{kml_href}")
+            elif not kml_href:
+                skipped += 1
+
+        def _finish():
+            if not layers:
+                messagebox.showwarning(
+                    "Kein Layer gefunden",
+                    "Für die ausgewählten Assets konnte kein darstellbarer "
+                    "Layer (COG/KML) ermittelt werden.")
+                return
+            url = map_viewer_url(layers)
+            webbrowser.open(url)
+            hinweis = f"  ({skipped} ohne auflösbares Tages-KML übersprungen)" if skipped else ""
+            self._log_write(f"[Kartenviewer] {len(layers)} Layer geöffnet{hinweis}\n{url}\n")
+        self.after(0, _finish)
+
+    def _find_ebo_ebn_kml_href(self, item: Dict) -> Optional[str]:
+        """Löst zu einem EBO/EBN-Foto-Item das zugehörige Tagesübersicht-Item
+        (fixe Zeit 23595900) auf und liefert dessen KML-Asset-Href. Sucht
+        zuerst in den bereits geladenen Items, sonst per Direct-Lookup."""
+        sibling_id = ebo_ebn_kml_item_id(item.get("id", ""))
+        if not sibling_id:
+            return None
+        sibling = next((it for it in self._all_items if it.get("id") == sibling_id), None)
+        if sibling is None and self._auth:
+            try:
+                sibling = get_item_direct(self._base_url, self._auth, sibling_id)
+            except Exception as exc:
+                self._log_write(f"[Viewer] KML-Lookup {sibling_id} fehlgeschlagen: {exc}\n")
+                return None
+        if not sibling:
+            return None
+        for aval in sibling.get("assets", {}).values():
+            href = aval.get("href", "")
+            if href.lower().endswith(".kml"):
+                return href
+        return None
+
+    # ── Angedocktes Viewer-Fenster (Chrome-App-Modus, rechts vom Hauptfenster) ──
+
+    def _checked_asset_nodes(self) -> List[Dict]:
+        return [d for nid, d in self._nodes.items()
+                if d["kind"] == "asset" and self._is_checked(nid)]
+
+    def _open_viewer_window(self):
+        checked = self._checked_asset_nodes()
+        if len(checked) != 1:
+            messagebox.showinfo(
+                "Auswahl erforderlich",
+                "Bitte nur ein Asset für die Ansicht im Viewer auswählen. "
+                "Bitte treffen Sie eine Auswahl eines Assets.")
+            return
+
+        d = checked[0]
+        item, ak, href = d["item"], d["asset_key"], d["href"]
+        if not (is_cog_asset(href) or is_ebo_ebn_asset(ak) or is_ebo_ebn_asset(href)):
+            messagebox.showwarning(
+                "Nicht darstellbar",
+                f"Das Asset '{ak}' ist weder ein GeoTIFF (.tif/.tiff) noch ein "
+                "EBO/EBN-Foto (.jpg) und kann daher nicht im Viewer dargestellt werden.")
+            return
+
+        key = (item["id"], ak)
+
+        if self._viewer_proc and self._viewer_proc.poll() is None:
+            if key == self._viewer_shown_key:
+                self._reposition_viewer_window()
+                return
+            self._close_viewer_window()
+
+        if is_cog_asset(href):
+            self._launch_viewer_window(item, "COG", href, key, fit_to_bbox=True)
+            return
+
+        # EBO/EBN-Foto: zugehöriges Tages-KML auflösen – ggf. Netzwerkzugriff,
+        # daher im Hintergrundthread, um die GUI nicht zu blockieren.
+        self._log_write(f"[Viewer-Fenster] Suche Tages-KML zu {item['id']} / {ak} …\n")
+
+        def _worker():
+            kml_href = self._find_ebo_ebn_kml_href(item)
+            self.after(0, lambda: self._on_kml_resolved_for_viewer(item, ak, key, kml_href))
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_kml_resolved_for_viewer(self, item: Dict, ak: str, key: Tuple[str, str],
+                                     kml_href: Optional[str]):
+        if not kml_href:
+            messagebox.showwarning(
+                "Kein KML gefunden",
+                f"Für {item['id']} / {ak} konnte kein zugehöriges Tages-KML "
+                "gefunden werden.")
+            return
+        self._launch_viewer_window(item, "KML", kml_href, key, fit_to_bbox=False)
+
+    def _launch_viewer_window(self, item: Dict, layer_type: str, layer_href: str,
+                               key: Tuple[str, str], fit_to_bbox: bool):
+        if not _WIN32_AVAILABLE:
+            messagebox.showerror(
+                "Viewer nicht verfügbar",
+                "Das Modul 'pywin32' konnte nicht automatisch installiert werden "
+                "(kein pip/Internetzugriff?) – ohne dieses Modul kann das "
+                "Viewer-Fenster nicht neben dem Hauptfenster positioniert werden.")
+            return
+        browser = _find_browser_exe()
+        if not browser:
+            messagebox.showerror(
+                "Viewer nicht verfügbar",
+                "Weder Google Chrome noch Microsoft Edge wurden auf diesem Rechner "
+                "gefunden. Das Viewer-Fenster benötigt einen der beiden Browser.")
+            return
+
+        self.update_idletasks()
+        x = self.winfo_x() + self.winfo_width()
+        y = self.winfo_y()
+        w = max(self.winfo_width(), 480)
+        h = max(self.winfo_height(), 480)
+
+        url = embed_viewer_url(item, f"{layer_type}|{layer_href}", w, h, fit_to_bbox=fit_to_bbox)
+
+        if self._viewer_profile_dir is None:
+            self._viewer_profile_dir = tempfile.mkdtemp(prefix="stac_monitor_viewer_")
+
+        try:
+            proc = subprocess.Popen([
+                browser, f"--app={url}",
+                f"--user-data-dir={self._viewer_profile_dir}",
+                f"--window-size={w},{h}", f"--window-position={x},{y}",
+                "--no-first-run", "--no-default-browser-check",
+            ])
+        except OSError as e:
+            messagebox.showerror("Viewer nicht verfügbar", f"Browser konnte nicht gestartet werden:\n{e}")
+            return
+
+        self._viewer_proc        = proc
+        self._viewer_hwnd        = None
+        self._viewer_shown_key   = key
+        self._log_write(f"[Viewer-Fenster] {item['id']} ({layer_type}) / {layer_href}\n{url}\n")
+
+        threading.Thread(target=self._wait_and_style_viewer_window,
+                          args=(proc.pid,), daemon=True).start()
+
+    def _wait_and_style_viewer_window(self, pid: int):
+        """Läuft in einem Hintergrundthread: sucht das neu geöffnete Browser-
+        Fenster per PID, entfernt Titelleiste/Rahmen für den angedockten Look.
+        Reine win32-Aufrufe auf ein fremdes Fensterhandle – keine Tkinter-
+        Widget-Zugriffe, daher unkritisch ausserhalb des Hauptthreads.
+
+        Chrome und Edge (beide Chromium-basiert) nutzen normalerweise die
+        Fensterklasse "Chrome_WidgetWin_1"; nach 4s ohne Treffer wird die
+        Suche zur Sicherheit auf jedes hinreichend grosse PID-Fenster
+        erweitert, falls eine Browser-Variante davon abweicht."""
+        hwnd_found = None
+        deadline    = time.time() + 8
+        broaden_at  = time.time() + 4
+        while time.time() < deadline and not hwnd_found:
+            strict = time.time() < broaden_at
+
+            def _cb(hwnd, _):
+                nonlocal hwnd_found
+                if hwnd_found or not win32gui.IsWindowVisible(hwnd):
+                    return
+                _, wpid = win32process.GetWindowThreadProcessId(hwnd)
+                if wpid != pid:
+                    return
+                if strict:
+                    if win32gui.GetClassName(hwnd) == "Chrome_WidgetWin_1":
+                        hwnd_found = hwnd
+                    return
+                left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+                if (right - left) >= 200 and (bottom - top) >= 200:
+                    hwnd_found = hwnd
+            win32gui.EnumWindows(_cb, None)
+            if not hwnd_found:
+                time.sleep(0.25)
+
+        if not hwnd_found:
+            return
+
+        style = win32gui.GetWindowLong(hwnd_found, win32con.GWL_STYLE)
+        style &= ~win32con.WS_CAPTION & ~win32con.WS_THICKFRAME
+        win32gui.SetWindowLong(hwnd_found, win32con.GWL_STYLE, style)
+
+        self._viewer_hwnd = hwnd_found
+        self.after(0, self._reposition_viewer_window)
+
+    def _reposition_viewer_window(self):
+        if not _WIN32_AVAILABLE or not self._viewer_hwnd:
+            return
+        if not win32gui.IsWindow(self._viewer_hwnd):
+            self._viewer_hwnd      = None
+            self._viewer_proc      = None
+            self._viewer_shown_key = None
+            return
+        x = self.winfo_x() + self.winfo_width()
+        y = self.winfo_y()
+        w = max(self.winfo_width(), 480)
+        h = max(self.winfo_height(), 480)
+        win32gui.SetWindowPos(
+            self._viewer_hwnd, None, x, y, w, h,
+            win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE | win32con.SWP_FRAMECHANGED)
+
+    def _on_main_window_configure(self, event):
+        if event.widget is not self:
+            return
+        if self._reposition_job is not None:
+            self.after_cancel(self._reposition_job)
+        self._reposition_job = self.after(80, self._reposition_viewer_window)
+
+    def _close_viewer_window(self):
+        if self._viewer_proc and self._viewer_proc.poll() is None:
+            try:
+                self._viewer_proc.terminate()
+            except OSError:
+                pass
+        self._viewer_proc      = None
+        self._viewer_hwnd      = None
+        self._viewer_shown_key = None
+
+    def _on_app_close(self):
+        self._close_viewer_window()
+        self.destroy()
 
     # ── Logging ───────────────────────────────────────────────────────────────
 
