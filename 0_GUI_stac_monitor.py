@@ -43,7 +43,7 @@ from stac_api import (
     check_asset_info, browser_url, asset_area,
     stac_item_year, stac_item_area, stac_item_acq_date,
     build_stac_item, is_cog_asset, is_ebo_ebn_asset, ebo_ebn_kml_item_id,
-    is_thumbnail_asset, map_viewer_url, embed_viewer_url,
+    is_thumbnail_asset, map_viewer_url, embed_viewer_url, union_bbox,
 )
 
 # Firmenproxy für pip, falls die direkte Verbindung zu PyPI im Bundesnetz
@@ -1496,11 +1496,13 @@ class StacMonitorApp(tk.Tk):
 
     def _worker_open_map_viewer(self, targets: List[Tuple[Dict, str, str]]):
         layers   = []
+        bboxes   = []
         seen_kml = set()
         skipped  = 0
         for item, _ak, href in targets:
             if is_cog_asset(href):
                 layers.append(f"COG|{href}")
+                bboxes.append(item.get("bbox"))
                 continue
             kml_href = self._find_ebo_ebn_kml_href(item)
             if kml_href and kml_href not in seen_kml:
@@ -1516,7 +1518,10 @@ class StacMonitorApp(tk.Tk):
                     "Für die ausgewählten Assets konnte kein darstellbarer "
                     "Layer (COG/KML) ermittelt werden.")
                 return
-            url = map_viewer_url(layers)
+            # Nur über die COG-Bboxen zoomen (nicht über die der KML-Tages-
+            # übersichten – die Bbox des einzelnen Foto-Items wäre für die
+            # Tagesübersicht keine sinnvolle Zoomstufe, s. embed_viewer_url).
+            url = map_viewer_url(layers, union_bbox(bboxes))
             webbrowser.open(url)
             hinweis = f"  ({skipped} ohne auflösbares Tages-KML übersprungen)" if skipped else ""
             self._log_write(f"[Kartenviewer] {len(layers)} Layer geöffnet{hinweis}\n{url}\n")

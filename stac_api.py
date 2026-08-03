@@ -98,7 +98,8 @@ def ebo_ebn_kml_item_id(item_id: str) -> Optional[str]:
     return f"{m.group('prefix')}{_KML_DAILY_SUFFIX}" if m else None
 
 
-def map_viewer_url(layers: List[str]) -> str:
+def map_viewer_url(layers: List[str], union_bbox: Optional[List[float]] = None,
+                    canvas_w: int = 1600, canvas_h: int = 900) -> str:
     """Baut einen map.geo.admin.ch-Link mit den übergebenen, bereits fertig
     formatierten Layer-Ausdrücken (z.B. "COG|<href>", "KML|<href>") als Layer
     (layers=layer1;layer2;...).
@@ -106,8 +107,15 @@ def map_viewer_url(layers: List[str]) -> str:
     Die Href-Anteile werden unverändert (nicht prozentkodiert) eingesetzt, da
     der Kartenviewer die verschachtelte URL innerhalb des Pipe-getrennten
     Layer-Ausdrucks roh erwartet (analog zu WMS|.../WMTS|...-Syntax).
-    """
-    return f"{_MAP_VIEWER_BASE}?layers={';'.join(layers)}"
+
+    ``union_bbox`` (WGS84 [x_min, y_min, x_max, y_max], z.B. die Vereinigung
+    der Bbox aller ausgewählten Assets) wird – falls vorhanden – analog zu
+    ``embed_viewer_url`` in ``center``/``z`` umgerechnet, damit der Link direkt
+    auf die betroffene Fläche zoomt statt auf der Schweiz-Übersicht zu landen
+    (dort wäre ein einzelnes COG-Asset nur ein paar Pixel gross und optisch
+    nicht von der Karte zu unterscheiden)."""
+    center_z = _bbox_to_center_zoom(union_bbox, canvas_w, canvas_h)
+    return f"{_MAP_VIEWER_BASE}?lang=de&{center_z}layers={';'.join(layers)}"
 
 
 _EMBED_VIEWER_BASE = "https://map.geo.admin.ch/#/embed"
@@ -157,6 +165,41 @@ def _wgs84_to_lv95(lon: float, lat: float) -> Tuple[float, float]:
     return e, n
 
 
+def _bbox_to_center_zoom(bbox: Optional[List[float]], canvas_w: int, canvas_h: int) -> str:
+    """Rechnet eine WGS84-Bbox [x_min, y_min, x_max, y_max] in einen
+    ``center=...&z=...&``-URL-Parameterteil für map.geo.admin.ch um (leerer
+    String, falls keine/ungültige Bbox), so dass die Bbox mit grosszügigem
+    Rand ins Kartenfenster (``canvas_w``x``canvas_h``) passt."""
+    if not bbox or len(bbox) < 4:
+        return ""
+    x_min, y_min = _wgs84_to_lv95(bbox[0], bbox[1])
+    x_max, y_max = _wgs84_to_lv95(bbox[2], bbox[3])
+    cx, cy = (x_min + x_max) / 2, (y_min + y_max) / 2
+    if not _is_lv95_coord(cx, cy):
+        return ""
+    width_m    = max(abs(x_max - x_min), 50.0)
+    height_m   = max(abs(y_max - y_min), 50.0)
+    # Faktor 2.0 (statt einer knappen Bbox-Passform): deckt sowohl
+    # den gewünschten Rand um das Asset als auch die anfangs (vor dem
+    # Entfernen der Titelleiste) kleinere Browser-Fensterfläche ab.
+    resolution = max(width_m * 2.0 / max(canvas_w, 1),
+                      height_m * 2.0 / max(canvas_h, 1))
+    # 0.3 Stufen zusätzlich rauszoomen als Sicherheitsmarge gegen
+    # Rundungseffekte des Viewers beim fraktionalen Zoom-Level.
+    z = max(0.0, _resolution_to_zoom(resolution) - 0.3)
+    return f"center={cx:.2f},{cy:.2f}&z={z:.2f}&"
+
+
+def union_bbox(bboxes: List[List[float]]) -> Optional[List[float]]:
+    """Vereinigt mehrere WGS84-Bboxen [x_min, y_min, x_max, y_max] zu einer
+    gemeinsamen Bbox. None, falls die Liste leer ist."""
+    valid = [b for b in bboxes if b and len(b) >= 4]
+    if not valid:
+        return None
+    return [min(b[0] for b in valid), min(b[1] for b in valid),
+            max(b[2] for b in valid), max(b[3] for b in valid)]
+
+
 def embed_viewer_url(item: Dict, layer_expr: str, canvas_w: int, canvas_h: int,
                       fit_to_bbox: bool = True) -> str:
     """Baut einen map.geo.admin.ch-Embed-Link (kein Menü/keine Suche, nur Karte
@@ -168,24 +211,7 @@ def embed_viewer_url(item: Dict, layer_expr: str, canvas_w: int, canvas_h: int,
     grosses Gebiet verteilten Platzhaltern, wo die Bbox des einzelnen Foto-
     Items keine sinnvolle Zoomstufe ergäbe) überspringt die Zoomberechnung und
     liefert die Standardansicht (Übersicht Schweiz) mit dem Layer."""
-    bbox = item.get("bbox")
-    center_z = ""
-    if fit_to_bbox and bbox and len(bbox) >= 4:
-        x_min, y_min = _wgs84_to_lv95(bbox[0], bbox[1])
-        x_max, y_max = _wgs84_to_lv95(bbox[2], bbox[3])
-        cx, cy = (x_min + x_max) / 2, (y_min + y_max) / 2
-        if _is_lv95_coord(cx, cy):
-            width_m    = max(abs(x_max - x_min), 50.0)
-            height_m   = max(abs(y_max - y_min), 50.0)
-            # Faktor 2.0 (statt einer knappen Bbox-Passform): deckt sowohl
-            # den gewünschten Rand um das Asset als auch die anfangs (vor dem
-            # Entfernen der Titelleiste) kleinere Browser-Fensterfläche ab.
-            resolution = max(width_m * 2.0 / max(canvas_w, 1),
-                              height_m * 2.0 / max(canvas_h, 1))
-            # 0.3 Stufen zusätzlich rauszoomen als Sicherheitsmarge gegen
-            # Rundungseffekte des Viewers beim fraktionalen Zoom-Level.
-            z = max(0.0, _resolution_to_zoom(resolution) - 0.3)
-            center_z = f"center={cx:.2f},{cy:.2f}&z={z:.2f}&"
+    center_z = _bbox_to_center_zoom(item.get("bbox"), canvas_w, canvas_h) if fit_to_bbox else ""
     return (f"{_EMBED_VIEWER_BASE}?lang=de&{center_z}"
             f"layers={layer_expr}&bgLayer=ch.swisstopo.pixelkarte-farbe")
 
