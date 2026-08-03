@@ -323,14 +323,7 @@ class StacMonitorApp(tk.Tk):
     _COL_W     = {"sel": 90, "area": 180, "status": 100, "typ": 90,
                   "groesse": 90, "geaendert": 105}
 
-    # Kreis-Glyphen aus dem Unicode-BMP-Bereich (Geometric Shapes, U+25xx/U+2Bxx),
-    # etwas grösser als die ursprünglichen ●/○-Zeichen. Farbige Emoji-Kreise
-    # (z.B. 🟢/🟡, U+1F7Ex) liegen ausserhalb der BMP (>U+FFFF) und lassen
-    # manche Tcl/Tk-Builds (z.B. Python 3.6 auf Windows) mit
-    # "character U+... is above the range (U+0000-U+FFFF) allowed by Tcl"
-    # abstürzen – deshalb ausschliesslich BMP-Zeichen. Die Amber-Einfärbung bei
-    # Auswahl erfolgt stattdessen über Zeilen-Tags (siehe _asset_tag/_item_tag),
-    # da ttk.Treeview keine Einzelzell-Farbe kennt, nur zeilenweise Tags.
+
     _CHK_ON      = "⬤"
     _CHK_OFF     = "◯"
     _CHK_PARTIAL = "◐"
