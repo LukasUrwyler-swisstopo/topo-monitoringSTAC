@@ -113,9 +113,17 @@ def map_viewer_url(layers: List[str], union_bbox: Optional[List[float]] = None,
     ``embed_viewer_url`` in ``center``/``z`` umgerechnet, damit der Link direkt
     auf die betroffene Fläche zoomt statt auf der Schweiz-Übersicht zu landen
     (dort wäre ein einzelnes COG-Asset nur ein paar Pixel gross und optisch
-    nicht von der Karte zu unterscheiden)."""
+    nicht von der Karte zu unterscheiden).
+
+    ``bgLayer`` wird wie bei ``embed_viewer_url`` fest gesetzt, da der volle
+    Kartenviewer (anders als das saubere Embed-Profil) im Standard-Browser mit
+    bestehendem LocalStorage geöffnet wird – ohne expliziten ``bgLayer`` kann
+    ein dort gespeicherter alter Zustand den extern übergebenen Layer beim
+    Laden verdrängen, so dass der Link nur in einem frischen/Inkognito-Profil
+    zuverlässig funktioniert."""
     center_z = _bbox_to_center_zoom(union_bbox, canvas_w, canvas_h)
-    return f"{_MAP_VIEWER_BASE}?lang=de&{center_z}layers={';'.join(layers)}"
+    return (f"{_MAP_VIEWER_BASE}?lang=de&{center_z}layers={';'.join(layers)}"
+            f"&bgLayer=ch.swisstopo.pixelkarte-farbe")
 
 
 _EMBED_VIEWER_BASE = "https://map.geo.admin.ch/#/embed"
