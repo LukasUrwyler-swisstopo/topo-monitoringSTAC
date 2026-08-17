@@ -25,9 +25,18 @@ python 0_GUI_stac_monitor.py
   Teilauswahl. Buttons "Alle auswählen" / "Alles abwählen" für Massenauswahl
 - Asset-Status-Prüfung via HTTP HEAD (Statuscode, Dateigrösse, Last-Modified),
   nur für ausgewählte Assets
-- "Nur Fehler-Assets anzeigen": blendet nach einer Prüfung alle Assets mit
+- **"Fehlerhafte anzeigen"** (Button direkt neben "Assets prüfen (HEAD)", alternativ
+  die Checkbox "Assets mit ERRORs anzeigen" im Toolbar — beide steuern denselben
+  Zustand und bleiben synchron): blendet nach einer Prüfung alle Assets mit
   Status 200 aus (Items ohne Fehler verschwinden ganz); leert beim Umschalten
-  die bisherige Auswahl, aktiv erst nach dem ersten Prüflauf
+  die bisherige Auswahl, aktiv erst nach dem ersten Prüflauf. Button-Text
+  wechselt zu "Alle Assets wieder anzeigen"
+- **"ITEMs ohne Thumbnail"** (Button neben "Assets prüfen (HEAD)", nur bei
+  Auftragstyp RAM sichtbar): blendet Items ohne `thumbnail`-Asset ein/aus —
+  reine Metadaten-Prüfung, keine HEAD-Prüfung nötig. Items mit `23595900` im
+  Namen (Tagesübersicht-Items mit KML-Platzhalter, feste Zeit 23:59:59, siehe
+  `ebo_ebn_kml_item_id`) haben planmässig nie ein Thumbnail und werden
+  ausgeschlossen. Button-Text wechselt ebenfalls zu "Alle Assets wieder anzeigen"
 - Statistik: OK / Fehler / Gesamtgrösse geprüfter Assets
 - Export der Download-Links als JSON, inkl. Area je Asset, nur
   ausgewählte Assets
@@ -97,7 +106,9 @@ python 0_GUI_stac_monitor.py
    Klick auf ein Item oder Asset, oder über "Alle auswählen"/"Alles abwählen"
 5. Sektion "STAC-Funktionen": "Assets prüfen (HEAD)" für Status/Grösse/
    Last-Modified, danach Export als JSON, CSV oder "Item - STAC Browser Links"
-   (jeweils nur Auswahl)
+   (jeweils nur Auswahl). Daneben "Fehlerhafte anzeigen" (nach der Prüfung)
+   und bei Auftragstyp RAM zusätzlich "ITEMs ohne Thumbnail" zum gezielten
+   Filtern der Baumansicht
 
 ## Dateien
 

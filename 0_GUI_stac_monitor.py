@@ -332,6 +332,15 @@ class StacMonitorApp(tk.Tk):
     _RELOAD_BTN_LABEL  = "ITEM-Liste aktualisieren"
     _SPINNER_FRAMES    = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
+    _SHOW_FAULTY_BTN_LABEL   = "Fehlerhafte anzeigen"
+    _SHOW_NO_THUMB_BTN_LABEL = "ITEMs ohne Thumbnail"
+    _SHOW_ALL_BTN_LABEL      = "Alle Assets wieder anzeigen"
+    # Items mit dieser Zeichenfolge im Namen (Tagesübersicht-Items mit
+    # KML-Platzhalter, feste Zeit 23:59:59 – siehe stac_api._KML_DAILY_SUFFIX)
+    # haben planmässig nie ein Thumbnail und sind im "ITEMs ohne Thumbnail"-
+    # Filter deshalb keine echten Kandidaten.
+    _NO_THUMB_EXCLUDE_SUBSTR = "23595900"
+
     def __init__(self):
         super().__init__()
         self.title("STAC Monitor  —  ch.swisstopo.spezialbefliegungen")
@@ -354,10 +363,18 @@ class StacMonitorApp(tk.Tk):
         # Wird nach dem ersten "Assets prüfen (HEAD)"-Lauf True -> schaltet den
         # "Nur Fehler-Assets anzeigen"-Filter frei.
         self._assets_checked_once: bool = False
+        # Toggle für "ITEMs ohne Thumbnail" (nur bei Auftragstyp RAM sichtbar,
+        # analog zum STAC/GDWH Deleting-Tool)
+        self._show_no_thumb_only: bool = False
 
         # Lade-Spinner im "ITEM-Liste laden"-Button
         self._spinner_job: Optional[str] = None
         self._spinner_idx: int = 0
+
+        # Generische Spinner für weitere Buttons (Key: Button-Widget, Value:
+        # dict mit idx/after_id/label) – unabhängig vom Lade-Spinner oben,
+        # da mehrere Buttons gleichzeitig "busy" sein können.
+        self._btn_spinners: Dict[ttk.Button, Dict] = {}
 
         # Angedocktes Viewer-Fenster (Chrome im App-Modus, rechts neben dem
         # Hauptfenster) – Prozess/Fensterhandle des aktuell offenen Viewers.
@@ -506,8 +523,24 @@ class StacMonitorApp(tk.Tk):
         row1.pack(side="top", anchor="w")
 
         self._check_btn = ttk.Button(
-            row1, text="Assets prüfen  (HEAD)", command=self._check_assets, state="disabled")
+            row1, text="Assets prüfen  (HEAD)", command=self._check_assets,
+            state="disabled")
         self._check_btn.pack(side="left")
+
+        self._show_faulty_btn = ttk.Button(
+            row1, text=self._SHOW_FAULTY_BTN_LABEL,
+            command=self._toggle_faulty_filter, state="disabled")
+        self._show_faulty_btn.pack(side="left", padx=(8, 0))
+        # Text-Sync mit self._error_filter_var (existiert erst nach
+        # _build_tree()) wird dort verdrahtet, siehe _build_tree().
+
+        # Nur bei Auftragstyp RAM relevant (Thumbnail-Pflicht) – wird erst
+        # sichtbar gepackt, wenn AUFTRAGSTYPEN[...] == "ram" ist, siehe
+        # _update_no_thumb_btn_visibility().
+        self._show_no_thumb_btn = ttk.Button(
+            row1, text=self._SHOW_NO_THUMB_BTN_LABEL,
+            command=self._toggle_no_thumb_filter, state="disabled")
+        self._update_no_thumb_btn_visibility()
 
         row2 = ttk.Frame(sec)
         row2.pack(side="top", anchor="w", pady=(6, 0))
@@ -586,6 +619,14 @@ class StacMonitorApp(tk.Tk):
             variable=self._error_filter_var, command=self._on_error_filter_toggle,
             state="disabled")
         self._error_filter_btn.pack(side="left")
+        # Hält Text und Stil von self._show_faulty_btn (oben bei "Assets prüfen")
+        # synchron, egal ob der Zustand über diesen Button oder über diese
+        # Checkbox geändert wird – beide steuern dieselbe Variable. Amber-Stil
+        # signalisiert, dass eine gefilterte Ansicht aktiv ist.
+        self._error_filter_var.trace_add("write", lambda *_: self._show_faulty_btn.config(
+            text=self._SHOW_ALL_BTN_LABEL if self._error_filter_var.get()
+                 else self._SHOW_FAULTY_BTN_LABEL,
+            style="Amber.TButton" if self._error_filter_var.get() else "TButton"))
 
         self._tree = ttk.Treeview(
             frame, columns=self._COLS, show="tree headings", selectmode="browse")
@@ -676,6 +717,13 @@ class StacMonitorApp(tk.Tk):
         s.map("AmberBold.TButton",
             background=[("active", T["btn_hover"]), ("pressed", T["sep"])],
             foreground=[("active", T["warn"])],
+            relief=[("pressed", "flat")])
+        s.configure("Green.TButton",
+            background=T["btn"], foreground=T["ok"],
+            bordercolor=T["sep"], relief="flat", padding=(8, 4), focuscolor=T["panel"])
+        s.map("Green.TButton",
+            background=[("disabled", T["btn"]), ("active", T["btn_hover"]), ("pressed", T["sep"])],
+            foreground=[("disabled", T["fg_dim"]), ("active", T["ok"])],
             relief=[("pressed", "flat")])
         s.configure("TRadiobutton",
             background=T["panel"], foreground=T["fg"], focuscolor=T["panel"])
@@ -776,6 +824,33 @@ class StacMonitorApp(tk.Tk):
         cur     = self._search_var.get().strip()
         if not cur or cur in known:
             self._search_var.set(suggest)
+        # Erster Aufruf kommt aus _build_filters(), BEVOR _build_stac_functions()
+        # den Button überhaupt erzeugt hat – dort wird die Sichtbarkeit separat
+        # gesetzt, hier nur bei echten (späteren) Auftragstyp-Wechseln nötig.
+        if hasattr(self, "_show_no_thumb_btn"):
+            self._update_no_thumb_btn_visibility()
+
+    def _update_no_thumb_btn_visibility(self):
+        """'ITEMs ohne Thumbnail' ergibt nur bei RAM (Thumbnail-Pflicht) Sinn –
+        Button nur dort einblenden. Beim Wegschalten von RAM wird ein aktiver
+        Filter automatisch zurückgesetzt (sonst bliebe die Ansicht unsichtbar
+        gefiltert hängen)."""
+        # winfo_manager() statt winfo_ismapped(): Letzteres hängt zusätzlich
+        # davon ab, ob das Fenster gerade tatsächlich auf dem Bildschirm
+        # sichtbar ist (z.B. False direkt nach dem Bauen, vor dem ersten
+        # Map-Event) – winfo_manager() spiegelt zuverlässig nur den reinen
+        # Pack-Zustand des Widgets.
+        is_ram = AUFTRAGSTYPEN.get(self._auftragstyp_var.get(), "") == "ram"
+        if is_ram:
+            if self._show_no_thumb_btn.winfo_manager() != "pack":
+                self._show_no_thumb_btn.pack(side="left", padx=(8, 0))
+        else:
+            if self._show_no_thumb_btn.winfo_manager() == "pack":
+                self._show_no_thumb_btn.pack_forget()
+            if self._show_no_thumb_only:
+                self._show_no_thumb_only = False
+                self._show_no_thumb_btn.config(
+                    text=self._SHOW_NO_THUMB_BTN_LABEL, style="TButton")
 
     def _load_credentials(self):
         env = self._env_var.get()
@@ -808,6 +883,10 @@ class StacMonitorApp(tk.Tk):
         self._visible_items = []
         self._assets_checked_once = False
         self._error_filter_var.set(False)
+        self._show_no_thumb_only = False
+        self._show_no_thumb_btn.config(
+            text=self._SHOW_NO_THUMB_BTN_LABEL, style="TButton")
+        self._check_btn.config(style="TButton")
         self._populate_tree([], [], [], False)  # Bestehende Liste sofort leeren, bevor neu geladen wird
         self._set_busy(True)
         search = self._search_var.get().strip()
@@ -867,6 +946,50 @@ class StacMonitorApp(tk.Tk):
         label = self._RELOAD_BTN_LABEL if self._items_loaded_once else self._LOAD_BTN_LABEL
         self._load_btn.config(text=label)
 
+    # ── Generischer Busy-Spinner für weitere Buttons ─────────────────────────
+    # (eigenständig vom Lade-Spinner oben, damit mehrere Buttons parallel
+    # "busy" sein können, z.B. Kartenviewer während einer HEAD-Prüfung.)
+
+    def _start_btn_spinner(self, btn: ttk.Button, label: str) -> str:
+        """Startet eine Spinner-Animation auf `btn` (Text wechselt zyklisch zu
+        '<Frame>  <label>'), bis _stop_btn_spinner(btn, ...) sie beendet – für
+        Hintergrund-Aktionen (Threads), die währenddessen echt animiert
+        werden können. Gibt den ursprünglichen Button-Text zurück."""
+        orig_text = btn.cget("text")
+        self._btn_spinners[btn] = {"idx": 0, "after_id": None, "label": label}
+        self._animate_btn_spinner(btn)
+        return orig_text
+
+    def _animate_btn_spinner(self, btn: ttk.Button):
+        entry = self._btn_spinners.get(btn)
+        if entry is None:
+            return
+        frame = self._SPINNER_FRAMES[entry["idx"] % len(self._SPINNER_FRAMES)]
+        btn.config(text=f"{frame}  {entry['label']}")
+        entry["idx"] += 1
+        entry["after_id"] = self.after(120, lambda: self._animate_btn_spinner(btn))
+
+    def _stop_btn_spinner(self, btn: ttk.Button, restore_text: str):
+        entry = self._btn_spinners.pop(btn, None)
+        if entry and entry["after_id"] is not None:
+            self.after_cancel(entry["after_id"])
+        btn.config(text=restore_text)
+
+    def _run_blocking_with_spinner(self, btn: ttk.Button, label: str, fn):
+        """Zeigt auf `btn` kurz einen Busy-Zustand, solange `fn()` synchron
+        läuft. Da der Aufruf blockierend ist (kein Hintergrund-Thread), gibt
+        es keine Bild-für-Bild-Animation wie bei _start_btn_spinner – aber
+        Text/Deaktivierung werden per erzwungenem Redraw vor der (potenziell
+        spürbaren) Operation sichtbar gemacht und danach zuverlässig wieder-
+        hergestellt (auch bei einer Exception in fn)."""
+        orig_text = btn.cget("text")
+        btn.config(text=f"{self._SPINNER_FRAMES[0]}  {label}", state="disabled")
+        self.update_idletasks()
+        try:
+            fn()
+        finally:
+            btn.config(text=orig_text, state="normal")
+
     # ── Filter + Treeview ─────────────────────────────────────────────────────
 
     def _active_extensions(self) -> List[str]:
@@ -903,6 +1026,35 @@ class StacMonitorApp(tk.Tk):
         self._checked.clear()
         self._apply_filters()
 
+    def _toggle_faulty_filter(self):
+        """Button-Pendant zur Checkbox 'Assets mit ERRORs anzeigen' (gleiche
+        Variable self._error_filter_var, Text-Sync per trace_add in
+        _build_tree()) – für die Positionierung direkt neben 'Assets prüfen'."""
+        self._error_filter_var.set(not self._error_filter_var.get())
+        self._on_error_filter_toggle()
+
+    def _item_has_thumbnail(self, item: Dict) -> bool:
+        return any(is_thumbnail_asset(k) or is_thumbnail_asset(v.get("href", ""))
+                   for k, v in item.get("assets", {}).items())
+
+    def _no_thumb_excluded(self, iid: str) -> bool:
+        """True für Items, die planmässig nie ein Thumbnail haben (siehe
+        _NO_THUMB_EXCLUDE_SUBSTR) – im 'ITEMs ohne Thumbnail'-Filter keine
+        echten Kandidaten."""
+        return self._NO_THUMB_EXCLUDE_SUBSTR in iid.lower()
+
+    def _toggle_no_thumb_filter(self):
+        """Blendet die Baumansicht auf Items OHNE Thumbnail-Asset ein/aus
+        (nur bei Auftragstyp RAM verfügbar). Kombiniert sich mit den übrigen
+        Filtern inkl. 'Fehlerhafte anzeigen'."""
+        self._show_no_thumb_only = not self._show_no_thumb_only
+        self._show_no_thumb_btn.config(
+            text=self._SHOW_ALL_BTN_LABEL if self._show_no_thumb_only
+                 else self._SHOW_NO_THUMB_BTN_LABEL,
+            style="Amber.TButton" if self._show_no_thumb_only else "TButton")
+        self._checked.clear()
+        self._apply_filters()
+
     def _apply_filters(self):
         if not self._all_items:
             return
@@ -929,6 +1081,10 @@ class StacMonitorApp(tk.Tk):
                     return True
                 return False
             items = [it for it in items if _has_match(it)]
+        if self._show_no_thumb_only:
+            items = [it for it in items
+                     if not self._item_has_thumbnail(it)
+                     and not self._no_thumb_excluded(it["id"])]
 
         self._visible_items = items
         self._populate_tree(items, exts, terms, errors_only)
@@ -1021,8 +1177,19 @@ class StacMonitorApp(tk.Tk):
         self._collapse_btn.config(state=state)
         self._select_all_btn.config(state=state)
         self._deselect_all_btn.config(state=state)
+        # Unabhängig von der aktuellen Filter-Trefferzahl klickbar halten,
+        # sonst könnten sich diese Toggle-Buttons selbst aussperren, falls der
+        # gefilterte Blick (z.B. "Fehlerhafte anzeigen") gerade leer ist –
+        # ein erneuter Klick müsste dann trotzdem wieder alle Assets zeigen
+        # können.
+        has_data = bool(self._all_items)
         self._error_filter_btn.config(
-            state="normal" if (on and self._assets_checked_once) else "disabled")
+            state="normal" if (has_data and self._assets_checked_once) else "disabled")
+        self._show_faulty_btn.config(
+            state="normal" if (has_data and self._assets_checked_once) else "disabled")
+        # "ITEMs ohne Thumbnail" ist reine Metadaten-Prüfung – anders als der
+        # Fehler-Filter unabhängig von einer HEAD-Prüfung nutzbar.
+        self._show_no_thumb_btn.config(state="normal" if has_data else "disabled")
 
     def _expand_all(self):
         for node in self._tree.get_children():
@@ -1114,10 +1281,12 @@ class StacMonitorApp(tk.Tk):
         return "break"
 
     def _select_all(self):
-        self._set_all_checked(True)
+        self._run_blocking_with_spinner(
+            self._select_all_btn, "Wähle aus …", lambda: self._set_all_checked(True))
 
     def _deselect_all(self):
-        self._set_all_checked(False)
+        self._run_blocking_with_spinner(
+            self._deselect_all_btn, "Wähle ab …", lambda: self._set_all_checked(False))
 
     def _set_all_checked(self, state: bool):
         for nid, d in self._nodes.items():
@@ -1136,31 +1305,53 @@ class StacMonitorApp(tk.Tk):
     # ── HEAD-Prüfung ──────────────────────────────────────────────────────────
 
     def _check_assets(self):
-        checked = [
+        """Prüft ALLE unter dem aktuellen Filter aufgelisteten Assets (nicht nur
+        ausgewählte) – analog zum 'Assets prüfen (HEAD)'-Button in
+        topo-deleteDATAfromSTAC. Items ganz ohne Assets ('leere' Items) werden
+        dabei ebenfalls erfasst und im Log ausgewiesen, auch wenn für sie kein
+        HEAD-Request möglich ist."""
+        # Spinner + Deaktivierung SOFORT sichtbar machen (per erzwungenem
+        # Redraw), bevor die möglicherweise etwas dauernde Vorarbeit unten
+        # (Item-/Asset-Liste zusammenstellen) läuft – sonst wirkt die GUI bis
+        # zum Threadstart eingefroren, weil Tk erst beim nächsten Idle-
+        # Durchlauf neu zeichnet.
+        self._check_btn.config(state="disabled", style="TButton")
+        orig_check_text = self._start_btn_spinner(self._check_btn, "Prüfe Assets …")
+        self.update_idletasks()
+
+        all_assets = [
             (d["item_id"], d["asset_key"], d["href"])
             for nid, d in self._nodes.items()
-            if d["kind"] == "asset" and d.get("href") and self._is_checked(nid)
+            if d["kind"] == "asset" and d.get("href")
         ]
-        if not checked:
-            self._log_write("[Prüfung] Keine ausgewählten Assets mit URL.\n")
-            messagebox.showinfo("Auswahl erforderlich", "Bitte Assets auswählen.")
+        # Einmaliges Set statt pro Item über alle Knoten zu iterieren
+        # (_item_asset_nids wäre hier O(n²) bei vielen Items/Assets).
+        items_with_assets = {d["item_id"] for nid, d in self._nodes.items() if d["kind"] == "asset"}
+        empty_items = sorted(
+            d["item_id"] for nid, d in self._nodes.items()
+            if d["kind"] == "item" and d["item_id"] not in items_with_assets)
+
+        if not all_assets and not empty_items:
+            self._log_write("[Prüfung] Keine Items/Assets im aktuellen Filter.\n")
+            self._stop_btn_spinner(self._check_btn, orig_check_text)
+            self._check_btn.config(state="normal")
             return
 
-        # Thumbnails werden übersprungen: viele kleine Zusatzdateien, die die
-        # Prüfung stark verlangsamen und für die Datenkontrolle irrelevant sind.
-        tasks = [t for t in checked if not is_thumbnail_asset(t[1]) and not is_thumbnail_asset(t[2])]
-        n_thumbs = len(checked) - len(tasks)
+        # Wie im Delete-Tool: Thumbnails werden mitgeprüft, keine Sonderrolle.
+        tasks = all_assets
+
+        self._log_write(f"[Prüfung] {len(tasks)} Assets aus allen aufgelisteten Items …\n")
+        if empty_items:
+            self._log_write(
+                f"[Prüfung] {len(empty_items)} Item(s) ohne Assets (leer): "
+                + ", ".join(empty_items) + "\n")
+
         if not tasks:
-            self._log_write("[Prüfung] Ausgewählte Assets sind ausschliesslich Thumbnails – übersprungen.\n")
-            messagebox.showinfo(
-                "Nur Thumbnails ausgewählt",
-                "Alle ausgewählten Assets sind Thumbnails und werden bei der "
-                "Prüfung übersprungen. Bitte andere Assets auswählen.")
+            self._assets_checked_once = True
+            self._stop_btn_spinner(self._check_btn, orig_check_text)
+            self._check_btn.config(state="normal", style="Green.TButton")
+            self._enable_error_filter_btn()
             return
-
-        self._check_btn.config(state="disabled")
-        hinweis = f"  ({n_thumbs} Thumbnail(s) übersprungen)" if n_thumbs else ""
-        self._log_write(f"[Prüfung] {len(tasks)} ausgewählte Assets{hinweis} …\n")
 
         # Spinner setzen
         for iid, ak, _ in tasks:
@@ -1170,9 +1361,9 @@ class StacMonitorApp(tk.Tk):
                 self._tree.item(nid, values=(cur[0], cur[1], "⟳", cur[3], "–", "–"),
                                 tags=("asset_dim",))
 
-        threading.Thread(target=self._worker_check, args=(tasks,), daemon=True).start()
+        threading.Thread(target=self._worker_check, args=(tasks, orig_check_text), daemon=True).start()
 
-    def _worker_check(self, tasks: List[Tuple[str, str, str]]):
+    def _worker_check(self, tasks: List[Tuple[str, str, str]], orig_check_text: str):
         ok_cnt  = err_cnt = 0
         tot_sz  = 0
 
@@ -1220,7 +1411,9 @@ class StacMonitorApp(tk.Tk):
         self._log_write(
             f"[Prüfung] Fertig: ✓ {ok_cnt}  ✗ {err_cnt}  "
             f"|  Gesamtgrösse (200 OK): {_fmt_size(tot_sz)}\n")
-        self.after(0, lambda: self._check_btn.config(state="normal"))
+        self.after(0, lambda: self._stop_btn_spinner(self._check_btn, orig_check_text))
+        # Grün = alle Assets/Items unter den aktuellen Filtereinstellungen geprüft.
+        self.after(0, lambda: self._check_btn.config(state="normal", style="Green.TButton"))
         self.after(0, self._enable_error_filter_btn)
         self.after(0, lambda: self._refresh_stats(ok_cnt, err_cnt, tot_sz))
 
@@ -1481,10 +1674,12 @@ class StacMonitorApp(tk.Tk):
             return
 
         self._log_write(f"[Kartenviewer] Löse Layer für {len(targets)} Asset(s) auf …\n")
+        orig_map_text = self._start_btn_spinner(self._map_viewer_btn, "Löse Layer auf …")
+        self._map_viewer_btn.config(state="disabled")
         threading.Thread(target=self._worker_open_map_viewer,
-                          args=(targets,), daemon=True).start()
+                          args=(targets, orig_map_text), daemon=True).start()
 
-    def _worker_open_map_viewer(self, targets: List[Tuple[Dict, str, str]]):
+    def _worker_open_map_viewer(self, targets: List[Tuple[Dict, str, str]], orig_map_text: str):
         layers   = []
         bboxes   = []
         seen_kml = set()
@@ -1502,6 +1697,8 @@ class StacMonitorApp(tk.Tk):
                 skipped += 1
 
         def _finish():
+            self._stop_btn_spinner(self._map_viewer_btn, orig_map_text)
+            self._map_viewer_btn.config(state="normal")
             if not layers:
                 messagebox.showwarning(
                     "Kein Layer gefunden",
