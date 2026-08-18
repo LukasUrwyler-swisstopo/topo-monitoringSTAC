@@ -36,7 +36,7 @@ gelöscht oder verändert.
   erkannt
 - **Fehlerhafte anzeigen** / **ITEMs ohne Thumbnail** – blenden die
   Baumansicht gezielt auf problematische bzw. unvollständige Items ein
-- **ITEM and ASSET download** – lädt die ausgewählten Assets direkt auf die
+- **Download ausgewählte ITEMs/ASSETs** – lädt die ausgewählten Assets direkt auf die
   eigene Festplatte (ein Unterordner pro Item). Assets über 50 GB werden
   automatisch in Teilstücken heruntergeladen, da sie sonst am
   CloudFront-Limit scheitern würden

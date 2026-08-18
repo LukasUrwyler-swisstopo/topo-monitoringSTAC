@@ -524,8 +524,13 @@ class StacMonitorApp(tk.Tk):
                              padding=8, style="Section.TLabelframe")
         sec.pack(fill="x", pady=(0, 4))
 
+        _hdr_font = ("Segoe UI", 8, "bold")
+
+        ttk.Label(sec, text="Quality Check", font=_hdr_font,
+                  style="Dim.TLabel").pack(side="top", anchor="w")
+
         row1 = ttk.Frame(sec)
-        row1.pack(side="top", anchor="w")
+        row1.pack(side="top", anchor="w", pady=(2, 0))
 
         self._check_btn = ttk.Button(
             row1, text="Assets prüfen  (HEAD)", command=self._check_assets,
@@ -547,8 +552,11 @@ class StacMonitorApp(tk.Tk):
             command=self._toggle_no_thumb_filter, state="disabled")
         self._update_no_thumb_btn_visibility()
 
+        ttk.Label(sec, text="Export", font=_hdr_font,
+                  style="Dim.TLabel").pack(side="top", anchor="w", pady=(8, 0))
+
         row2 = ttk.Frame(sec)
-        row2.pack(side="top", anchor="w", pady=(6, 0))
+        row2.pack(side="top", anchor="w", pady=(2, 0))
 
         self._export_json_btn = ttk.Button(
             row2, text="Export JSON",
@@ -564,11 +572,14 @@ class StacMonitorApp(tk.Tk):
             command=self._export_stac_browser_links, state="disabled")
         self._export_links_btn.pack(side="left", padx=(0, 4))
 
+        ttk.Label(sec, text="Download", font=_hdr_font,
+                  style="Dim.TLabel").pack(side="top", anchor="w", pady=(8, 0))
+
         row_dl = ttk.Frame(sec)
-        row_dl.pack(side="top", anchor="w", pady=(6, 0))
+        row_dl.pack(side="top", anchor="w", pady=(2, 0))
 
         self._download_btn = ttk.Button(
-            row_dl, text="ITEM and ASSET download",
+            row_dl, text="Download ausgewählte ITEMs/ASSETs",
             command=self._download_assets, state="disabled")
         self._download_btn.pack(side="left", padx=(0, 4))
 
@@ -577,8 +588,11 @@ class StacMonitorApp(tk.Tk):
             command=self._create_download_links, state="disabled")
         self._create_links_btn.pack(side="left", padx=(0, 4))
 
+        ttk.Label(sec, text="ASSET Viewer", font=_hdr_font,
+                  style="Dim.TLabel").pack(side="top", anchor="w", pady=(8, 0))
+
         row3 = ttk.Frame(sec)
-        row3.pack(side="top", anchor="w", pady=(6, 0))
+        row3.pack(side="top", anchor="w", pady=(2, 0))
 
         self._map_viewer_btn = ttk.Button(
             row3, text="Link auf Kartenviewer",
