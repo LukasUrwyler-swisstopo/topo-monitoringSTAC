@@ -5,6 +5,7 @@ stac_api.py  –  STAC API Hilfsfunktionen für ch.swisstopo.spezialbefliegungen
 
 import math
 import re
+import time
 import requests
 import urllib3
 from urllib.parse import urljoin
@@ -23,6 +24,12 @@ _PROXY = {
 }
 
 COLLECTION_ID = "ch.swisstopo.spezialbefliegungen"
+
+# CloudFront blockiert HEAD/GET (ohne Range) für Objekte > 50 GB mit Status 400
+# (siehe swisstopo-Anleitung "Downloading Large Assets (> 50 GB)"). Solche
+# Assets werden per sequenziellen Range-Requests direkt vom S3-Origin geladen.
+LARGE_ASSET_THRESHOLD_BYTES = 50 * 1024 ** 3
+DEFAULT_DOWNLOAD_CHUNK_BYTES = 20 * 1024 ** 3
 
 ENVIRONMENTS = {
     "INT":  "https://sys-data.int.bgdi.ch/api/stac/v0.9/",
@@ -313,10 +320,38 @@ def filter_items(items: List[Dict], search_term: str = "") -> List[Dict]:
     return [item for item in items if term in item.get("id", "").lower()]
 
 
+def _probe_large_asset(href: str, auth: Tuple) -> Optional[int]:
+    """Prüft per GET Range: bytes=0-0, ob ein Asset > 50 GB ist (CloudFront
+    blockiert HEAD/GET für solche Objekte mit Status 400, siehe swisstopo-
+    Anleitung 'Downloading Large Assets (> 50 GB)'). Der Range-Request geht
+    direkt an den S3-Origin und liefert bei Erfolg 206 mit Content-Range.
+    Gibt die Gesamtgrösse in Bytes zurück, wenn das Asset tatsächlich > 50 GB
+    ist, sonst None (dann war der 400er ein echter Fehler)."""
+    headers = {"Range": "bytes=0-0"}
+    try:
+        r = _request("get", href, headers=headers, verify=False,
+                    timeout=(5, 15), allow_redirects=True, stream=True)
+        if r.status_code in (401, 403):
+            r = _request("get", href, headers=headers, auth=auth, verify=False,
+                        timeout=(5, 15), allow_redirects=True, stream=True)
+        r.close()
+        if r.status_code != 206:
+            return None
+        m = re.search(r"/(\d+)\s*$", r.headers.get("Content-Range", ""))
+        if not m:
+            return None
+        total_size = int(m.group(1))
+        return total_size if total_size > LARGE_ASSET_THRESHOLD_BYTES else None
+    except Exception:
+        return None
+
+
 def check_asset_info(href: str, auth: Tuple) -> Dict:
     """HEAD-Request auf Asset-URL.
     Gibt dict mit status, size_bytes und last_modified zurück.
-    status: HTTP-Code oder negativ (-1=kein href, -2=timeout, -3=exception)."""
+    status: HTTP-Code oder negativ (-1=kein href, -2=timeout, -3=exception,
+    -4=Asset > 50 GB, von CloudFront korrekterweise mit 400 auf HEAD
+    beantwortet – siehe _probe_large_asset)."""
     result: Dict = {"status": -1, "size_bytes": None, "last_modified": None}
     if not href:
         return result
@@ -333,11 +368,128 @@ def check_asset_info(href: str, auth: Tuple) -> Dict:
         lm = r.headers.get("Last-Modified")
         if lm:
             result["last_modified"] = lm
+
+        if r.status_code == 400:
+            total_size = _probe_large_asset(href, auth)
+            if total_size is not None:
+                result["status"]     = -4
+                result["size_bytes"] = total_size
     except requests.exceptions.Timeout:
         result["status"] = -2
     except Exception:
         result["status"] = -3
     return result
+
+
+_DOWNLOAD_READ_CHUNK = 16 * 1024 * 1024  # 16 MB Lesepuffer für Stream-Downloads
+
+
+def _iter_response_to_file(r: requests.Response, fh, offset: int,
+                            downloaded: int, total: Optional[int], progress_cb) -> int:
+    """Schreibt eine Response ab `offset` in die (bereits geöffnete) Datei und
+    ruft dabei progress_cb(gesamt_downloaded, total) auf. Gibt die neue
+    downloaded-Summe zurück."""
+    fh.seek(offset)
+    for data in r.iter_content(chunk_size=_DOWNLOAD_READ_CHUNK):
+        if not data:
+            continue
+        fh.write(data)
+        downloaded += len(data)
+        if progress_cb:
+            progress_cb(downloaded, total)
+    return downloaded
+
+
+def _download_stream(href: str, dest_path: str, auth: Tuple,
+                      progress_cb=None) -> Dict:
+    """Normaler Download per GET-Stream (Assets ≤ 50 GB)."""
+    r = _request("get", href, verify=False, timeout=(30, 300),
+                allow_redirects=True, stream=True)
+    if r.status_code in (401, 403):
+        r = _request("get", href, auth=auth, verify=False, timeout=(30, 300),
+                    allow_redirects=True, stream=True)
+    if r.status_code != 200:
+        r.close()
+        return {"ok": False, "bytes": 0, "error": f"HTTP {r.status_code}"}
+
+    total = None
+    cl = r.headers.get("Content-Length", "")
+    if cl.isdigit():
+        total = int(cl)
+
+    with open(dest_path, "wb") as fh:
+        downloaded = _iter_response_to_file(r, fh, 0, 0, total, progress_cb)
+    r.close()
+    return {"ok": True, "bytes": downloaded, "error": None}
+
+
+def _download_ranged(href: str, dest_path: str, auth: Tuple, total_size: int,
+                      chunk_size: int, progress_cb=None) -> Dict:
+    """Download eines Assets > 50 GB per sequenziellen HTTP-Range-Requests
+    (siehe swisstopo-Anleitung 'Downloading Large Assets (> 50 GB)'), mit
+    kurzem Retry pro Chunk analog zum dort dokumentierten range_download.py."""
+    downloaded = 0
+    with open(dest_path, "wb") as fh:
+        offset = 0
+        while offset < total_size:
+            end = min(offset + chunk_size - 1, total_size - 1)
+            headers = {"Range": f"bytes={offset}-{end}"}
+            last_error = None
+            for attempt in range(3):
+                try:
+                    r = _request("get", href, headers=headers, verify=False,
+                                timeout=(30, 600), allow_redirects=True, stream=True)
+                    if r.status_code in (401, 403):
+                        r = _request("get", href, headers=headers, auth=auth, verify=False,
+                                    timeout=(30, 600), allow_redirects=True, stream=True)
+                    if r.status_code not in (200, 206):
+                        r.close()
+                        return {"ok": False, "bytes": downloaded,
+                                "error": f"HTTP {r.status_code} (Chunk {offset}-{end})"}
+                    downloaded = _iter_response_to_file(r, fh, offset, downloaded,
+                                                        total_size, progress_cb)
+                    r.close()
+                    last_error = None
+                    break
+                except Exception as exc:
+                    last_error = str(exc)
+                    time.sleep(2 ** attempt)
+            if last_error is not None:
+                return {"ok": False, "bytes": downloaded, "error": last_error}
+            offset = end + 1
+    return {"ok": True, "bytes": downloaded, "error": None}
+
+
+def download_asset(href: str, dest_path: str, auth: Tuple, progress_cb=None,
+                    chunk_size: int = DEFAULT_DOWNLOAD_CHUNK_BYTES) -> Dict:
+    """Lädt ein Asset nach dest_path herunter. Erkennt Assets > 50 GB
+    automatisch (HEAD liefert dafür 400, siehe check_asset_info/
+    _probe_large_asset) und lädt diese per Range-Requests, alle anderen per
+    normalem GET-Stream.
+    progress_cb(downloaded_bytes, total_bytes_or_None) wird laufend
+    aufgerufen. Gibt {"ok": bool, "bytes": int, "error": Optional[str]}
+    zurück."""
+    try:
+        r = _request("head", href, verify=False, timeout=(5, 15), allow_redirects=True)
+        if r.status_code in (401, 403):
+            r = _request("head", href, auth=auth, verify=False,
+                        timeout=(5, 15), allow_redirects=True)
+
+        if r.status_code == 400:
+            total_size = _probe_large_asset(href, auth)
+            if total_size is not None:
+                return _download_ranged(href, dest_path, auth, total_size,
+                                        chunk_size, progress_cb)
+            return {"ok": False, "bytes": 0, "error": "HTTP 400"}
+
+        if r.status_code != 200:
+            return {"ok": False, "bytes": 0, "error": f"HTTP {r.status_code}"}
+
+        return _download_stream(href, dest_path, auth, progress_cb)
+    except requests.exceptions.Timeout:
+        return {"ok": False, "bytes": 0, "error": "timeout"}
+    except Exception as exc:
+        return {"ok": False, "bytes": 0, "error": str(exc)}
 
 
 def stac_item_acq_date(item: Dict) -> str:

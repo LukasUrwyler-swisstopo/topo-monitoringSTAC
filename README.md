@@ -1,120 +1,88 @@
 # STAC Monitor – ch.swisstopo.spezialbefliegungen
 
-Read-only Desktop-Tool (Tkinter) zur Überwachung der STAC-Collection
+Desktop-Tool (Tkinter) zur Überwachung der STAC-Collection
 `ch.swisstopo.spezialbefliegungen` auf INT- und PROD-Umgebung von swisstopo /
-BGDI. Keine Schreib- oder Löschfunktionen.
+BGDI. Read-only gegenüber der STAC-API – es werden keine Items/Assets
+gelöscht oder verändert.
 
-## GUI
+## Schnellstart
 
-```bash
-python 0_GUI_stac_monitor.py
-```
+1. **Einmalig:** Zugangsdaten hinterlegen, siehe [Einrichtung](#einrichtung)
+2. Tool starten:
+
+   ```bash
+   python 0_GUI_stac_monitor.py
+   ```
+
+3. Im GUI oben: **Umgebung** (INT/PROD) wählen und **Credentials laden**
+4. Optional Filter setzen (Auftragstyp, Jahr, Suchbegriff, Dateiendung),
+   dann **Laden** klicken
+5. In der Baumansicht die gewünschten Items/Assets per Checkbox auswählen
+   (oder **Alle auswählen**)
+6. Im Bereich **STAC-Funktionen**: **Assets prüfen (HEAD)** für Status &
+   Grösse, danach je nach Bedarf herunterladen oder exportieren
 
 <img width="440" height="559" alt="image" src="https://github.com/user-attachments/assets/74401204-eb8a-4f45-9bf8-1edf99763541" />
 
-
-
 ## Funktionen
 
-- Items der Collection laden (alle, gefiltert oder per exakter Item-ID)
-- Filter nach Auftragstyp (KRY / RAM), Jahr, Item-ID/Suchbegriff, Dateiendung
-- Area-Spalte: AOI-Name aus Item-Properties bzw. aus der Asset-Description
-  (`Area: ...`) erkannt und angezeigt, sowohl je Item als auch je Asset
-- Checkboxen je Item/Asset ("Auswahl"-Spalte) zur Auswahl, was geprüft/exportiert
-  wird; Item-Checkbox (de)selektiert alle zugehörigen Assets, Tri-State bei
-  Teilauswahl. Buttons "Alle auswählen" / "Alles abwählen" für Massenauswahl
-- Asset-Status-Prüfung via HTTP HEAD (Statuscode, Dateigrösse, Last-Modified),
-  nur für ausgewählte Assets
-- **"Fehlerhafte anzeigen"** (Button direkt neben "Assets prüfen (HEAD)", alternativ
-  die Checkbox "Assets mit ERRORs anzeigen" im Toolbar — beide steuern denselben
-  Zustand und bleiben synchron): blendet nach einer Prüfung alle Assets mit
-  Status 200 aus (Items ohne Fehler verschwinden ganz); leert beim Umschalten
-  die bisherige Auswahl, aktiv erst nach dem ersten Prüflauf. Button-Text
-  wechselt zu "Alle Assets wieder anzeigen"
-- **"ITEMs ohne Thumbnail"** (Button neben "Assets prüfen (HEAD)", nur bei
-  Auftragstyp RAM sichtbar): blendet Items ohne `thumbnail`-Asset ein/aus —
-  reine Metadaten-Prüfung, keine HEAD-Prüfung nötig. Items mit `23595900` im
-  Namen (Tagesübersicht-Items mit KML-Platzhalter, feste Zeit 23:59:59, siehe
-  `ebo_ebn_kml_item_id`) haben planmässig nie ein Thumbnail und werden
-  ausgeschlossen. Button-Text wechselt ebenfalls zu "Alle Assets wieder anzeigen"
-- Statistik: OK / Fehler / Gesamtgrösse geprüfter Assets
-- Export der Download-Links als JSON, inkl. Area je Asset, nur
-  ausgewählte Assets
-- Export der Asset-Tabelle als CSV (für interne Auswertung), nur ausgewählte Assets
-- "Export STAC Browser Links" als TXT: STAC-Browser-Link je Item plus
-  Liste der ausgewählten Assets (für Kunden-Weitergabe)
-- Item-JSON-Detailansicht, URL in Zwischenablage kopieren / im Browser öffnen
-- STAC Browser öffnen (Collection- oder Item-Deep-Link, für Kunden-Weitergabe)
-- "GUI Viewer öffnen" / "Link auf Kartenviewer": zeigen COG-Assets
-  (.tif/.tiff) direkt in map.geo.admin.ch; bei EBO/EBN-Fotos (.jpg) stattdessen
-  automatisch das zugehörige Tages-KML (Item mit fixer Zeit 23595900), da die
-  Einzelfotos selbst nicht darstellbar sind. "Viewer-Fenster öffnen" ist ein
-  angedocktes Kartenfenster rechts neben dem Hauptfenster (Chrome, ersatzweise
-  Edge, im App-Modus, menülos, nur Pan/Zoom) – aktiv, sobald genau 1
-  darstellbares Asset ausgewählt ist
-- Hell/Dark-Theme
+- **Items laden & filtern** – ganze Collection oder gezielt per Item-ID;
+  Filter nach Auftragstyp, Jahr, Suchbegriff, Dateiendung
+- **Auswahl per Checkbox** – einzelne Assets oder ganze Items, inkl.
+  "Alle auswählen" / "Alles abwählen"
+- **Assets prüfen (HEAD)** – prüft Status, Dateigrösse und Änderungsdatum
+  der ausgewählten Assets. Assets über 50 GB (von CloudFront normalerweise
+  mit Fehler 400 gemeldet) werden korrekt als ✓ **>50GB** statt als Fehler
+  erkannt
+- **Fehlerhafte anzeigen** / **ITEMs ohne Thumbnail** – blenden die
+  Baumansicht gezielt auf problematische bzw. unvollständige Items ein
+- **ITEM and ASSET download** – lädt die ausgewählten Assets direkt auf die
+  eigene Festplatte (ein Unterordner pro Item). Assets über 50 GB werden
+  automatisch in Teilstücken heruntergeladen, da sie sonst am
+  CloudFront-Limit scheitern würden
+- **create Download-Links** – erstellt ein Textfile mit den Download-Links
+  der Auswahl zum Weitergeben an Kunden; bei Assets über 50 GB inkl.
+  Hinweis auf die nötige Download-Methode
+- **Weitere Exporte** – Download-Links als JSON, Asset-Tabelle als CSV,
+  STAC-Browser-Links als TXT
+- **Kartenviewer** – ausgewählte GeoTIFFs bzw. Tagesübersichten direkt in
+  map.geo.admin.ch anzeigen, wahlweise im Browser oder in einem
+  angedockten Viewer-Fenster
+- Statistik (OK/Fehler/Gesamtgrösse), Item-JSON-Detailansicht,
+  Hell/Dark-Theme
 
 ## Voraussetzungen
 
-- Python 3.11+ (funktioniert auch mit 3.6)
+- Python 3.11+ mit Tkinter (in der Standard-Windows-Installation enthalten)
 - Paket `requests` (`pip install requests`)
-- Tkinter (in der Standard-Windows-Python-Installation bereits enthalten)
-- Für "Viewer-Fenster öffnen": Google Chrome oder Microsoft Edge (Chrome wird
-  bevorzugt, falls beide vorhanden sind). Das Paket `pywin32` (Fenster-
-  Positionierung) wird beim ersten Start automatisch per pip nachinstalliert,
-  falls noch nicht vorhanden – kein manueller Schritt nötig. Schlägt das
-  fehl (kein pip-/Internetzugriff), bleibt der Button deaktiviert bzw. es
-  erscheint ein Hinweis
+- Für das angedockte Viewer-Fenster: Google Chrome oder Microsoft Edge.
+  Das Paket `pywin32` wird beim ersten Start bei Bedarf automatisch
+  nachinstalliert
 
 ## Einrichtung
 
-1. Zugangsdaten hinterlegen unter `secrets/stac_credentials.json`:
+Zugangsdaten hinterlegen unter `secrets/stac_credentials.json`:
 
-   ```json
-   {
-     "INT":  {"username": "...", "password": "..."},
-     "PROD": {"username": "...", "password": "..."}
-   }
-   ```
-
-2. Optional: `secrets/proxy_config.json` anpassen, falls ein anderer
-   Firmenproxy als `proxy-bvcol.admin.ch:8080` verwendet wird.
-
-Der Ordner `secrets/` ist in `.gitignore` ausgeschlossen und wird nicht
-versioniert.
-
-## Netzwerk / Proxy
-
-Der Zugriff auf `sys-data.int.bgdi.ch` (INT) und `data.geo.admin.ch` (PROD)
-erfolgt im Bundesnetz über den Proxy `proxy-bvcol.admin.ch:8080`
-([stac_api.py](stac_api.py)). Ist dieser Proxy nicht auflösbar (z.B. auf
-einem privaten Rechner ausserhalb des Bundesnetz), fällt das Tool nach dem
-ersten fehlgeschlagenen Versuch automatisch auf eine Direktverbindung
-zurück.
-
-## Start
-
-```bash
-python 0_GUI_stac_monitor.py
+```json
+{
+  "INT":  {"username": "...", "password": "..."},
+  "PROD": {"username": "...", "password": "..."}
+}
 ```
 
-1. Umgebung wählen (INT/PROD) und Credentials laden
-2. Filter setzen (optional)
-3. "Laden" – bei vollständiger Item-ID im Suchfeld Direct-Lookup, sonst
-   automatischer Fallback auf Laden der gesamten Collection + Filter
-4. Optional: Auswahl über die Checkbox-Spalte ("Export") anpassen – per
-   Klick auf ein Item oder Asset, oder über "Alle auswählen"/"Alles abwählen"
-5. Sektion "STAC-Funktionen": "Assets prüfen (HEAD)" für Status/Grösse/
-   Last-Modified, danach Export als JSON, CSV oder "Item - STAC Browser Links"
-   (jeweils nur Auswahl). Daneben "Fehlerhafte anzeigen" (nach der Prüfung)
-   und bei Auftragstyp RAM zusätzlich "ITEMs ohne Thumbnail" zum gezielten
-   Filtern der Baumansicht
+Optional: `secrets/proxy_config.json` anpassen, falls ein anderer
+Firmenproxy als `proxy-bvcol.admin.ch:8080` verwendet wird. Der Ordner
+`secrets/` ist in `.gitignore` ausgeschlossen und wird nicht versioniert.
+
+Im Bundesnetz läuft der Zugriff automatisch über diesen Proxy; ausserhalb
+(z.B. privater Rechner) schaltet das Tool selbstständig auf eine
+Direktverbindung um.
 
 ## Dateien
 
 | Datei | Zweck |
 |---|---|
 | `0_GUI_stac_monitor.py` | GUI-Anwendung (Tkinter) |
-| `stac_api.py` | STAC-API-Hilfsfunktionen (read-only) |
+| `stac_api.py` | STAC-API-Hilfsfunktionen (inkl. Download) |
 | `secrets/stac_credentials.json` | Zugangsdaten INT/PROD (nicht versioniert) |
 | `secrets/proxy_config.json` | Proxy-Konfiguration (nicht versioniert) |

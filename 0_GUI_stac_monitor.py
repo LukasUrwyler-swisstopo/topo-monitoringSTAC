@@ -20,6 +20,7 @@ import importlib
 import io
 import json
 import os
+import re
 import site
 import subprocess
 import sys
@@ -33,14 +34,16 @@ from datetime import datetime
 from email.utils import parsedate
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext, filedialog
 
 from stac_api import (
     COLLECTION_ID, ENVIRONMENTS, AUFTRAGSTYPEN, EXT_PRESETS,
+    LARGE_ASSET_THRESHOLD_BYTES,
     get_item_direct, get_collection_items, filter_items,
-    check_asset_info, browser_url, asset_area,
+    check_asset_info, download_asset, browser_url, asset_area,
     stac_item_year, stac_item_area, stac_item_acq_date,
     build_stac_item, is_cog_asset, is_ebo_ebn_asset, ebo_ebn_kml_item_id,
     is_thumbnail_asset, map_viewer_url, embed_viewer_url, union_bbox,
@@ -214,6 +217,8 @@ def _status_label(sc: Optional[int]) -> Tuple[str, str]:
         return "–", "asset_dim"
     if sc == 200:
         return "✓  200", "asset_ok"
+    if sc == -4:
+        return "✓  >50GB", "asset_ok"
     if sc > 0:
         return f"✗  {sc}", "asset_err"
     if sc == -2:
@@ -558,6 +563,19 @@ class StacMonitorApp(tk.Tk):
             row2, text="Export STAC Browser Links",
             command=self._export_stac_browser_links, state="disabled")
         self._export_links_btn.pack(side="left", padx=(0, 4))
+
+        row_dl = ttk.Frame(sec)
+        row_dl.pack(side="top", anchor="w", pady=(6, 0))
+
+        self._download_btn = ttk.Button(
+            row_dl, text="ITEM and ASSET download",
+            command=self._download_assets, state="disabled")
+        self._download_btn.pack(side="left", padx=(0, 4))
+
+        self._create_links_btn = ttk.Button(
+            row_dl, text="create Download-Links",
+            command=self._create_download_links, state="disabled")
+        self._create_links_btn.pack(side="left", padx=(0, 4))
 
         row3 = ttk.Frame(sec)
         row3.pack(side="top", anchor="w", pady=(6, 0))
@@ -924,6 +942,8 @@ class StacMonitorApp(tk.Tk):
             self._export_json_btn.config(state="disabled")
             self._export_csv_btn.config(state="disabled")
             self._export_links_btn.config(state="disabled")
+            self._download_btn.config(state="disabled")
+            self._create_links_btn.config(state="disabled")
             self._map_viewer_btn.config(state="disabled")
             self._start_load_spinner()
         else:
@@ -1015,15 +1035,18 @@ class StacMonitorApp(tk.Tk):
     def _asset_is_error(self, item_id: str, asset_key: str) -> bool:
         """True, wenn das Asset bereits per HEAD geprüft wurde und dabei
         keinen Status 200 hatte. Noch ungeprüfte Assets gelten nicht als
-        Fehler (unbekannt statt fehlerhaft)."""
+        Fehler (unbekannt statt fehlerhaft). Status -4 (Asset > 50 GB, von
+        CloudFront korrekterweise mit 400 beantwortet) gilt ebenfalls nicht
+        als Fehler."""
         info = self._asset_info.get(item_id, {}).get(asset_key)
-        return bool(info) and info.get("status") != 200
+        return bool(info) and info.get("status") not in (200, -4)
 
     def _on_error_filter_toggle(self):
         # Ansicht wechselt (alle Assets <-> nur Fehler) -> bisherige Auswahl
         # verwerfen, damit keine inzwischen unsichtbaren Assets exportiert/
         # geprüft werden.
         self._checked.clear()
+        self._refresh_deselect_btn_style()
         self._apply_filters()
 
     def _toggle_faulty_filter(self):
@@ -1053,6 +1076,7 @@ class StacMonitorApp(tk.Tk):
                  else self._SHOW_NO_THUMB_BTN_LABEL,
             style="Amber.TButton" if self._show_no_thumb_only else "TButton")
         self._checked.clear()
+        self._refresh_deselect_btn_style()
         self._apply_filters()
 
     def _apply_filters(self):
@@ -1171,6 +1195,8 @@ class StacMonitorApp(tk.Tk):
         self._export_json_btn.config(state=state)
         self._export_csv_btn.config(state=state)
         self._export_links_btn.config(state=state)
+        self._download_btn.config(state=state)
+        self._create_links_btn.config(state=state)
         self._map_viewer_btn.config(state=state)
         self._viewer_win_btn.config(state=state)
         self._expand_btn.config(state=state)
@@ -1241,6 +1267,14 @@ class StacMonitorApp(tk.Tk):
         sonst die bisherige Item-Kennfarbe."""
         return "item_selected" if all_checked else "item"
 
+    def _refresh_deselect_btn_style(self):
+        """Färbt den Button 'Alles abwählen' amber, sobald mindestens ein
+        Asset (bzw. Item, da dessen Auswahl über seine Assets läuft)
+        ausgewählt ist – sonst neutrale Standardfarbe."""
+        any_checked = any(self._checked.values())
+        self._deselect_all_btn.config(
+            style="Amber.TButton" if any_checked else "TButton")
+
     def _refresh_item_glyph(self, item_id: str):
         item_nid = f"item::{item_id}"
         if not self._tree.exists(item_nid):
@@ -1278,6 +1312,7 @@ class StacMonitorApp(tk.Tk):
                 row_tag = self._asset_tag(new_state, self._asset_status_tag(nid))
                 self._tree.item(nid, values=vals, tags=(row_tag,))
             self._refresh_item_glyph(d["item_id"])
+        self._refresh_deselect_btn_style()
         return "break"
 
     def _select_all(self):
@@ -1301,6 +1336,7 @@ class StacMonitorApp(tk.Tk):
         for nid, d in self._nodes.items():
             if d["kind"] == "item":
                 self._refresh_item_glyph(d["item_id"])
+        self._refresh_deselect_btn_style()
 
     # ── HEAD-Prüfung ──────────────────────────────────────────────────────────
 
@@ -1386,7 +1422,7 @@ class StacMonitorApp(tk.Tk):
                 lm       = info.get("last_modified")
                 stxt, tg = _status_label(sc)
 
-                if sc == 200:
+                if sc in (200, -4):
                     ok_cnt += 1
                     tot_sz += sz or 0
                 elif sc is not None:
@@ -1405,12 +1441,12 @@ class StacMonitorApp(tk.Tk):
                            self._tree.exists(n) and
                            self._tree.item(n, values=(sel, ar, s, t, sz_, lm_), tags=(tag,)))
 
-                if sc != 200:
+                if sc not in (200, -4):
                     self._log_write(f"  {ak}  →  {stxt}  {_fmt_size(sz)}\n")
 
         self._log_write(
             f"[Prüfung] Fertig: ✓ {ok_cnt}  ✗ {err_cnt}  "
-            f"|  Gesamtgrösse (200 OK): {_fmt_size(tot_sz)}\n")
+            f"|  Gesamtgrösse (OK): {_fmt_size(tot_sz)}\n")
         self.after(0, lambda: self._stop_btn_spinner(self._check_btn, orig_check_text))
         # Grün = alle Assets/Items unter den aktuellen Filtereinstellungen geprüft.
         self.after(0, lambda: self._check_btn.config(state="normal", style="Green.TButton"))
@@ -1420,6 +1456,7 @@ class StacMonitorApp(tk.Tk):
     def _enable_error_filter_btn(self):
         self._assets_checked_once = True
         self._error_filter_btn.config(state="normal")
+        self._show_faulty_btn.config(state="normal")
 
     def _refresh_stats(self, ok: int, err: int, total_bytes: int):
         n_items  = len(self._visible_items)
@@ -1645,6 +1682,169 @@ class StacMonitorApp(tk.Tk):
             filetypes=[("Textdatei", "*.txt"), ("Alle Dateien", "*.*")],
             defaultextension=".txt", on_saved=_on_saved,
         )
+
+    _LARGE_ASSET_HINT = (
+        '  >50GB - Download nur per HTTP Range-Requests möglich (CloudFront-'
+        'Limit), siehe swisstopo-Anleitung "Downloading Large Assets (> 50 GB)".'
+    )
+
+    def _asset_is_large(self, item_id: str, asset_key: str) -> bool:
+        """True, wenn eine vorherige HEAD-Prüfung das Asset als > 50 GB
+        identifiziert hat (Status -4, siehe check_asset_info)."""
+        info = self._asset_info.get(item_id, {}).get(asset_key)
+        if not info:
+            return False
+        if info.get("status") == -4:
+            return True
+        sz = info.get("size_bytes")
+        return bool(sz and sz > LARGE_ASSET_THRESHOLD_BYTES)
+
+    def _create_download_links(self):
+        if not self._visible_items:
+            messagebox.showwarning("Keine Daten", "Keine Items geladen.")
+            return
+
+        exts  = self._active_extensions()
+        terms = self._active_terms()
+        _pfx  = COLLECTION_ID + "_"
+        blocks      = []
+        asset_count = 0
+        large_count = 0
+        for item in self._visible_items:
+            iid     = item["id"]
+            display = iid[len(_pfx):] if iid.startswith(_pfx) else iid
+            assets  = item.get("assets", {})
+            asset_entries = []
+            for ak, aval in assets.items():
+                href = aval.get("href", "")
+                if not self._asset_matches(href, ak, exts, terms):
+                    continue
+                if not self._is_checked(f"asset::{iid}::{ak}"):
+                    continue
+                asset_entries.append((ak, href))
+            if not asset_entries:
+                continue
+            asset_entries.sort(key=lambda e: e[0])
+            lines = [f"item: {display};", "asset: "]
+            for ak, href in asset_entries:
+                lines.append(ak)
+                lines.append(f"- {href}")
+                asset_count += 1
+                if self._asset_is_large(iid, ak):
+                    lines.append(self._LARGE_ASSET_HINT)
+                    large_count += 1
+            blocks.append("\n".join(lines))
+
+        if not blocks:
+            messagebox.showwarning("Keine Auswahl", "Keine ausgewählten Assets nach Filter.")
+            return
+
+        content = "\n\n\n".join(blocks) + "\n"
+
+        def _on_saved(path):
+            self._log_write(f"[Export] Download-Links: {path}\n")
+            extra = f"  (davon {large_count} > 50GB)" if large_count else ""
+            messagebox.showinfo("Export erfolgreich",
+                                f"{asset_count} Asset-Link(s) exportiert{extra}.\n{path}")
+
+        ExportPreviewDialog(
+            self, self._dark, "Download-Links exportieren", content,
+            initialfile=f"download_links_{datetime.now().strftime('%Y-%m-%d_%H%M%S')}.txt",
+            filetypes=[("Textdatei", "*.txt"), ("Alle Dateien", "*.*")],
+            defaultextension=".txt", on_saved=_on_saved,
+        )
+
+    # ── ASSET-Download ────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _sanitize_filename(name: str) -> str:
+        return re.sub(r'[<>:"/\\|?*]', "_", name)
+
+    def _download_assets(self):
+        tasks = [
+            (d["item_id"], d["asset_key"], d["href"])
+            for nid, d in self._nodes.items()
+            if d["kind"] == "asset" and d.get("href") and self._is_checked(nid)
+        ]
+        if not tasks:
+            messagebox.showwarning("Keine Auswahl", "Keine Assets ausgewählt.")
+            return
+
+        dest_dir = filedialog.askdirectory(title="Zielordner für Download wählen")
+        if not dest_dir:
+            return
+
+        if not messagebox.askyesno(
+                "Download starten",
+                f"{len(tasks)} Asset(s) werden nach\n{dest_dir}\n"
+                f"heruntergeladen (ein Unterordner pro Item). Assets > 50GB "
+                f"werden automatisch per Range-Requests geladen. Fortfahren?"):
+            return
+
+        self._download_btn.config(state="disabled", style="TButton")
+        orig_text = self._start_btn_spinner(self._download_btn, "Download läuft …")
+        threading.Thread(target=self._worker_download,
+                          args=(tasks, dest_dir, orig_text), daemon=True).start()
+
+    def _download_progress_cb(self, ak: str):
+        """Baut einen throttled progress_cb (max. alle 5s bzw. bei Prozent-
+        wechsel eine Logzeile) für download_asset()."""
+        state = {"t": 0.0, "pct": -1}
+
+        def cb(downloaded: int, total: Optional[int]):
+            now = time.monotonic()
+            pct = (downloaded * 100 // total) if total else None
+            if pct == state["pct"] and now - state["t"] < 5.0:
+                return
+            state["t"], state["pct"] = now, pct
+            if total:
+                msg = f"    {ak}: {pct}%  ({_fmt_size(downloaded)} / {_fmt_size(total)})\n"
+            else:
+                msg = f"    {ak}: {_fmt_size(downloaded)}\n"
+            self.after(0, lambda: self._log_write(msg))
+        return cb
+
+    def _worker_download(self, tasks: List[Tuple[str, str, str]], dest_dir: str,
+                          orig_text: str):
+        ok_cnt = err_cnt = skip_cnt = 0
+        tot_bytes = 0
+
+        for iid, ak, href in tasks:
+            item_dir = Path(dest_dir) / self._sanitize_filename(iid)
+            item_dir.mkdir(parents=True, exist_ok=True)
+            fname = Path(urlparse(href).path).name or self._sanitize_filename(ak)
+            dest_path = item_dir / fname
+
+            if dest_path.exists():
+                skip_cnt += 1
+                self._log_write(
+                    f"[Download] {iid} / {ak}: bereits vorhanden – übersprungen "
+                    f"({dest_path})\n")
+                continue
+
+            self._log_write(f"[Download] {iid} / {ak}  →  {dest_path}\n")
+            tmp_path = dest_path.with_name(dest_path.name + ".part")
+            result = download_asset(href, str(tmp_path), self._auth,
+                                    progress_cb=self._download_progress_cb(ak))
+            if result["ok"]:
+                tmp_path.rename(dest_path)
+                ok_cnt    += 1
+                tot_bytes += result["bytes"]
+                self._log_write(
+                    f"[Download] {iid} / {ak}: OK ({_fmt_size(result['bytes'])})\n")
+            else:
+                err_cnt += 1
+                if tmp_path.exists():
+                    tmp_path.unlink()
+                self._log_write(
+                    f"[Download] {iid} / {ak}: FEHLER – {result['error']}\n")
+
+        self._log_write(
+            f"[Download] Fertig: ✓ {ok_cnt}  ✗ {err_cnt}  ⏭ {skip_cnt} übersprungen  "
+            f"|  {_fmt_size(tot_bytes)} geladen\n")
+        self.after(0, lambda: self._stop_btn_spinner(self._download_btn, orig_text))
+        self.after(0, lambda: self._download_btn.config(
+            state="normal", style="Green.TButton" if err_cnt == 0 else "TButton"))
 
     def _open_map_viewer(self):
         if not self._visible_items:
