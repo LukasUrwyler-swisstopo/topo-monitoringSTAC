@@ -48,6 +48,11 @@ from stac_api import (
     build_stac_item, is_cog_asset, is_ebo_ebn_asset, ebo_ebn_kml_item_id,
     is_thumbnail_asset, map_viewer_url, embed_viewer_url, union_bbox,
 )
+from gdwh_api import (
+    GDWH_GDS_KEYS, GDWH_ENVIRONMENTS,
+    gdwh_get_imports, gdwh_import_id, gdwh_import_date,
+    gdwh_search_file_metadata, gdwh_index_file_metadata_by_import,
+)
 
 # Firmenproxy für pip, falls die direkte Verbindung zu PyPI im Bundesnetz
 # fehlschlägt (analog zum Proxy-Fallback in stac_api.py).
@@ -389,6 +394,11 @@ class StacMonitorApp(tk.Tk):
         self._viewer_profile_dir: Optional[str] = None
         self._reposition_job: Optional[str] = None
 
+        # GDWH-Tab: rohe Imports + angereicherte (Import, FileMetadata-Match)
+        # Paare der aktuell geladenen Umgebung/GDS-Key-Kombination.
+        self._gdwh_enriched: List[Tuple[Dict, Optional[Dict]]] = []
+        self._gdwh_base_url: str = ""
+
         self._build_ui()
         self._apply_theme(True)
 
@@ -415,16 +425,25 @@ class StacMonitorApp(tk.Tk):
         )
         self._theme_btn.pack(side="right", padx=12)
 
-        main = ttk.Frame(self)
-        main.pack(fill="both", expand=True, padx=12, pady=8)
+        self._nb = ttk.Notebook(self)
+        self._nb.pack(fill="both", expand=True, padx=12, pady=(8, 4))
 
-        self._build_credentials(main)
-        self._build_filters(main)
-        self._build_actions(main)
-        self._build_stac_functions(main)
-        self._build_tree(main)
-        self._build_stats(main)
-        self._build_log(main)
+        stac_tab = ttk.Frame(self._nb)
+        self._nb.add(stac_tab, text="STAC")
+        self._build_credentials(stac_tab)
+        self._build_filters(stac_tab)
+        self._build_actions(stac_tab)
+        self._build_stac_functions(stac_tab)
+        self._build_tree(stac_tab)
+        self._build_stats(stac_tab)
+
+        gdwh_tab = ttk.Frame(self._nb)
+        self._nb.add(gdwh_tab, text="GDWH")
+        self._build_gdwh_tab(gdwh_tab)
+
+        log_parent = ttk.Frame(self)
+        log_parent.pack(fill="x", padx=12, pady=(0, 8))
+        self._build_log(log_parent)
 
     def _build_credentials(self, parent):
         sec = ttk.LabelFrame(parent, text="1   Umgebung & Credentials",
@@ -700,6 +719,205 @@ class StacMonitorApp(tk.Tk):
             font=("Cascadia Mono", 8), wrap="word")
         self._log.pack(fill="both")
 
+    # ── GDWH-Tab (read-only) ─────────────────────────────────────────────────
+
+    _GDWH_COLS      = ("year", "area", "stac_dt", "status")
+    _GDWH_COL_HEADS = {"year": "Jahr", "area": "Area",
+                        "stac_dt": "StacItemDatetime", "status": "Status"}
+    _GDWH_COL_W     = {"year": 60, "area": 200, "stac_dt": 220, "status": 260}
+
+    _GDWH_LOAD_BTN_LABEL   = "Imports laden"
+    _GDWH_RELOAD_BTN_LABEL = "Imports aktualisieren"
+
+    def _build_gdwh_tab(self, parent):
+        sec1 = ttk.LabelFrame(parent, text="1   Umgebung",
+                              padding=8, style="Section.TLabelframe")
+        sec1.pack(fill="x", pady=(0, 4))
+
+        row1 = ttk.Frame(sec1)
+        row1.pack(side="top", anchor="w")
+        ttk.Label(row1, text="Umgebung:").pack(side="left", padx=(0, 6))
+        self._gdwh_env_var = tk.StringVar(value="INT")
+        for env in ("INT", "PROD"):
+            ttk.Radiobutton(row1, text=env, variable=self._gdwh_env_var, value=env,
+                            command=self._gdwh_on_env_change).pack(side="left", padx=4)
+        self._gdwh_url_lbl = ttk.Label(row1, text=GDWH_ENVIRONMENTS["INT"],
+                                       font=("Segoe UI", 8), style="Dim.TLabel")
+        self._gdwh_url_lbl.pack(side="left", padx=12)
+
+        ttk.Label(
+            sec1,
+            text="Authentifizierung: Windows-Session (aktuell eingeloggter User, wie im Browser) "
+                 "– read-only, es wird nichts verändert/gelöscht.",
+            font=("Segoe UI", 8, "italic"), style="Dim.TLabel",
+        ).pack(side="top", anchor="w", pady=(6, 0))
+
+        sec2 = ttk.LabelFrame(parent, text="2   GDS-Key & Filter",
+                              padding=8, style="Section.TLabelframe")
+        sec2.pack(fill="x", pady=(0, 4))
+
+        ttk.Label(sec2, text="GDS-Key:").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        self._gdwh_gds_key_var = tk.StringVar(value=GDWH_GDS_KEYS[0])
+        gdwh_gds_combo = ttk.Combobox(
+            sec2, textvariable=self._gdwh_gds_key_var,
+            values=GDWH_GDS_KEYS, state="readonly", width=24,
+        )
+        gdwh_gds_combo.grid(row=0, column=1, sticky="w", padx=(0, 16))
+
+        ttk.Label(sec2, text="Jahr [optional]:").grid(row=0, column=2, sticky="w", padx=(0, 6))
+        self._gdwh_year_var = tk.StringVar()
+        self._gdwh_year_var.trace_add("write", lambda *_: self._gdwh_apply_filter())
+        ttk.Entry(sec2, textvariable=self._gdwh_year_var, width=8).grid(
+            row=0, column=3, sticky="w")
+        ttk.Label(
+            sec2, text="z.B. 2023  —  Leer = alle Jahre",
+            font=("Segoe UI", 8, "italic"), style="Dim.TLabel",
+        ).grid(row=0, column=4, sticky="w", padx=(8, 0))
+
+        self._gdwh_load_btn = ttk.Button(
+            sec2, text=self._GDWH_LOAD_BTN_LABEL,
+            command=self._gdwh_load, style="Amber.TButton",
+        )
+        self._gdwh_load_btn.grid(row=0, column=5, padx=(16, 0))
+
+        sec3 = ttk.LabelFrame(parent, text="3   DataPackages",
+                              padding=4, style="Section.TLabelframe")
+        sec3.pack(fill="both", expand=True, pady=(0, 4))
+        sec3.rowconfigure(0, weight=1)
+        sec3.columnconfigure(0, weight=1)
+
+        self._gdwh_tree = ttk.Treeview(
+            sec3, columns=self._GDWH_COLS, show="headings", selectmode="browse")
+        for col in self._GDWH_COLS:
+            self._gdwh_tree.column(col, width=self._GDWH_COL_W[col],
+                                   minwidth=55, stretch=(col == "status"), anchor="w")
+            self._gdwh_tree.heading(col, text=self._GDWH_COL_HEADS[col])
+
+        vsb = ttk.Scrollbar(sec3, orient="vertical", command=self._gdwh_tree.yview)
+        self._gdwh_tree.configure(yscrollcommand=vsb.set)
+        self._gdwh_tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+
+        self._gdwh_stats_outer = tk.Frame(parent)
+        self._gdwh_stats_outer.pack(fill="x", pady=(2, 0))
+        self._gdwh_stats_lbl = tk.Label(
+            self._gdwh_stats_outer, text="Keine Daten geladen.",
+            font=("Segoe UI", 9), anchor="w")
+        self._gdwh_stats_lbl.pack(side="left", padx=4)
+
+    def _gdwh_on_env_change(self):
+        self._gdwh_url_lbl.configure(text=GDWH_ENVIRONMENTS[self._gdwh_env_var.get()])
+        self._gdwh_enriched = []
+        self._gdwh_tree.delete(*self._gdwh_tree.get_children())
+        self._gdwh_stats_lbl.configure(text="Keine Daten geladen.")
+        self._gdwh_load_btn.config(text=self._GDWH_LOAD_BTN_LABEL, style="Amber.TButton")
+
+    def _gdwh_load(self):
+        self._gdwh_load_btn.config(state="disabled")
+        self._gdwh_base_url = GDWH_ENVIRONMENTS[self._gdwh_env_var.get()]
+        gds_key = self._gdwh_gds_key_var.get()
+        env     = self._gdwh_env_var.get()
+        threading.Thread(
+            target=self._gdwh_worker_load, args=(env, gds_key), daemon=True).start()
+
+    def _gdwh_worker_load(self, env: str, gds_key: str):
+        try:
+            self._log_write(f"[GDWH] Lade Imports für {env}/{gds_key} …\n")
+            imports = gdwh_get_imports(self._gdwh_base_url, gds_key)
+            self._log_write(f"[GDWH] {len(imports)} Import(s) gefunden. "
+                            f"Lade FileMetadata …\n")
+            file_metadata = gdwh_search_file_metadata(self._gdwh_base_url, gds_key)
+            meta_index = gdwh_index_file_metadata_by_import(file_metadata)
+
+            enriched = []
+            for imp in imports:
+                match = meta_index.get(gdwh_import_id(imp))
+                enriched.append((imp, match))
+            self._gdwh_enriched = enriched
+            self._log_write(f"[GDWH] {len(file_metadata)} FileMetadata-Eintrag/Einträge "
+                            f"gefunden, {len(enriched)} Import(s) angereichert.\n")
+            self.after(0, self._gdwh_apply_filter)
+        except Exception as exc:
+            self._log_write(f"[GDWH FEHLER] {exc}\n")
+            self.after(0, lambda: messagebox.showerror("GDWH Fehler", str(exc)))
+        finally:
+            self.after(0, lambda: self._gdwh_load_btn.config(
+                state="normal", text=self._GDWH_RELOAD_BTN_LABEL, style="TButton"))
+
+    def _gdwh_apply_filter(self):
+        year = self._gdwh_year_var.get().strip()
+        data = self._gdwh_enriched
+        if year:
+            def _year_matches(item):
+                imp, match = item
+                if match:
+                    for src in (match.get("stac_datetime", ""), match.get("year", "")):
+                        m = re.search(r"(?<!\d)(20\d{2})(?!\d)", src)
+                        if m:
+                            return m.group(1) == year
+                m = re.search(r"(?<!\d)(20\d{2})(?!\d)", gdwh_import_date(imp))
+                return m.group(1) == year if m else True
+            data = [item for item in data if _year_matches(item)]
+        self._gdwh_populate_tree(data, filtered=bool(year))
+
+    def _gdwh_populate_tree(self, enriched: List[Tuple], filtered: bool = False):
+        self._gdwh_tree.delete(*self._gdwh_tree.get_children())
+        if not enriched:
+            self._gdwh_stats_lbl.configure(
+                text="0 DataPackages nach Filter." if filtered
+                     else "0 DataPackages gefunden.")
+            return
+
+        def _year_key(item):
+            imp, match = item
+            if match:
+                for src in (match.get("stac_datetime", ""), match.get("year", "")):
+                    m = re.search(r"(?<!\d)(20\d{2})(?!\d)", src)
+                    if m:
+                        return int(m.group(1))
+            m = re.search(r"(?<!\d)(20\d{2})(?!\d)", gdwh_import_date(imp))
+            return int(m.group(1)) if m else 0
+
+        no_match_count = 0
+        incomplete_count = 0
+        for imp, match in sorted(enriched, key=_year_key, reverse=True):
+            area          = match.get("area", "")          if match else ""
+            stac_datetime = match.get("stac_datetime", "") if match else ""
+
+            year = ""
+            if match:
+                for src in (stac_datetime, match.get("year", "")):
+                    m = re.search(r"(?<!\d)(20\d{2})(?!\d)", src)
+                    if m:
+                        year = m.group(1)
+                        break
+            if not year:
+                m = re.search(r"(?<!\d)(20\d{2})(?!\d)", gdwh_import_date(imp))
+                year = m.group(1) if m else "????"
+
+            if match is None:
+                status, tag = "⚠ Kein FileMetadata-Match", "asset_err"
+                no_match_count += 1
+            elif not area or not stac_datetime:
+                status, tag = "⚠ unvollständig", "asset_warn"
+                incomplete_count += 1
+            else:
+                status, tag = "✓ OK", "asset_ok"
+
+            self._gdwh_tree.insert(
+                "", "end",
+                values=(year, area or "–", stac_datetime or "–", status),
+                tags=(tag,),
+            )
+
+        total = len(enriched)
+        anomaly_note = ""
+        if no_match_count or incomplete_count:
+            anomaly_note = (f"  |  ⚠ {no_match_count} ohne Match, "
+                            f"{incomplete_count} unvollständig")
+        self._gdwh_stats_lbl.configure(
+            text=f"{total} DataPackage(s) geladen{anomaly_note}")
+
     # ── Theme ─────────────────────────────────────────────────────────────────
 
     def _toggle_theme(self):
@@ -800,6 +1018,10 @@ class StacMonitorApp(tk.Tk):
         self._tree.tag_configure("asset_warn", foreground=T["tree_warn"])
         self._tree.tag_configure("asset_dim",  foreground=T["tree_dim"])
 
+        self._gdwh_tree.tag_configure("asset_ok",   foreground=T["tree_ok"])
+        self._gdwh_tree.tag_configure("asset_err",  foreground=T["tree_err"])
+        self._gdwh_tree.tag_configure("asset_warn", foreground=T["tree_warn"])
+
         self.configure(bg=T["root"])
         self._hdr.configure(bg=T["hdr_bg"])
         self._hdr_lbl.configure(bg=T["hdr_bg"], fg=T["hdr_fg"])
@@ -811,6 +1033,8 @@ class StacMonitorApp(tk.Tk):
                              insertbackground=T["log_fg"])
         self._stats_outer.configure(bg=T["panel"])
         self._stats_lbl.configure(bg=T["panel"], fg=T["fg_dim"])
+        self._gdwh_stats_outer.configure(bg=T["panel"])
+        self._gdwh_stats_lbl.configure(bg=T["panel"], fg=T["fg_dim"])
         self._ctx.configure(
             bg=T["btn"], fg=T["fg"],
             activebackground=T["sel_bg"], activeforeground=T["sel_fg"])

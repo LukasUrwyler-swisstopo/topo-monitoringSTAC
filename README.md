@@ -2,8 +2,9 @@
 
 Desktop-Tool (Tkinter) zur Überwachung der STAC-Collection
 `ch.swisstopo.spezialbefliegungen` auf INT- und PROD-Umgebung von swisstopo /
-BGDI. Read-only gegenüber der STAC-API – es werden keine Items/Assets
-gelöscht oder verändert.
+BGDI, sowie der zugehörigen DataPackages im **Geodata-Warehouse (GDWH)**.
+Read-only gegenüber beiden Systemen – es werden keine Items/Assets/
+DataPackages gelöscht oder verändert.
 
 ## Schnellstart
 
@@ -14,6 +15,8 @@ gelöscht oder verändert.
    python 0_GUI_stac_monitor.py
    ```
 
+### Tab STAC
+
 3. Im GUI oben: **Umgebung** (INT/PROD) wählen und **Credentials laden**
 4. Optional Filter setzen (Auftragstyp, Jahr, Suchbegriff, Dateiendung),
    dann **Laden** klicken
@@ -21,6 +24,25 @@ gelöscht oder verändert.
    (oder **Alle auswählen**)
 6. Im Bereich **STAC-Funktionen**: **Assets prüfen (HEAD)** für Status &
    Grösse, danach je nach Bedarf herunterladen oder exportieren
+
+### Tab GDWH
+
+1. **Umgebung** (INT/PROD) wählen – Authentifizierung läuft automatisch über
+   die aktuelle Windows-Session (kein Credentials-Schritt nötig)
+2. **GDS-Key** wählen (`SB_DOP`, `SB_DOP_16`, `SB_DSM`, `SB_DSM_PUNKTWOLKE`),
+   optional **Jahr** eintragen, dann **Imports laden**
+3. Die Liste zeigt pro DataPackage Jahr, Area, StacItemDatetime und einen
+   Status:
+   - **✓ OK** – FileMetadata-Match vorhanden, Area und StacItemDatetime
+     gesetzt
+   - **⚠ unvollständig** – FileMetadata-Match vorhanden, aber Area oder
+     StacItemDatetime fehlt
+   - **⚠ Kein FileMetadata-Match** – zu diesem Import existiert kein
+     FileMetadata-Eintrag; deutet auf einen unsauberen GDWH-Zustand hin
+     (z.B. eine frühere, unvollständige Löschung)
+
+   Der Jahresfilter filtert die bereits geladene Liste sofort weiter, ohne
+   Neu-Laden.
 
 <img width="440" height="559" alt="image" src="https://github.com/user-attachments/assets/74401204-eb8a-4f45-9bf8-1edf99763541" />
 
@@ -50,6 +72,8 @@ gelöscht oder verändert.
   angedockten Viewer-Fenster
 - Statistik (OK/Fehler/Gesamtgrösse), Item-JSON-Detailansicht,
   Hell/Dark-Theme
+- **Tab GDWH** – Liste der DataPackages je GDS-Key mit Jahr/Area/
+  StacItemDatetime und Validitäts-Status (siehe [Tab GDWH](#tab-gdwh))
 
 ## Voraussetzungen
 
@@ -58,10 +82,14 @@ gelöscht oder verändert.
 - Für das angedockte Viewer-Fenster: Google Chrome oder Microsoft Edge.
   Das Paket `pywin32` wird beim ersten Start bei Bedarf automatisch
   nachinstalliert
+- Für den GDWH-Tab: Paket `requests-negotiate-sspi` (wird beim ersten Start
+  bei Bedarf automatisch nachinstalliert). Authentifizierung läuft über
+  Windows SSPI mit dem aktuell eingeloggten User – keine separaten
+  Zugangsdaten nötig, GDWH ist nur im internen Netz / VPN erreichbar
 
 ## Einrichtung
 
-Zugangsdaten hinterlegen unter `secrets/stac_credentials.json`:
+Zugangsdaten für den STAC-Tab hinterlegen unter `secrets/stac_credentials.json`:
 
 ```json
 {
@@ -76,7 +104,8 @@ Firmenproxy als `proxy-bvcol.admin.ch:8080` verwendet wird. Der Ordner
 
 Im Bundesnetz läuft der Zugriff automatisch über diesen Proxy; ausserhalb
 (z.B. privater Rechner) schaltet das Tool selbstständig auf eine
-Direktverbindung um.
+Direktverbindung um. Der GDWH-Tab braucht keine Zugangsdaten (Windows-SSPI)
+und verbindet sich direkt, ohne Proxy.
 
 ## Dateien
 
@@ -84,5 +113,6 @@ Direktverbindung um.
 |---|---|
 | `0_GUI_stac_monitor.py` | GUI-Anwendung (Tkinter) |
 | `stac_api.py` | STAC-API-Hilfsfunktionen (inkl. Download) |
+| `gdwh_api.py` | GDWH-API-Hilfsfunktionen (read-only) |
 | `secrets/stac_credentials.json` | Zugangsdaten INT/PROD (nicht versioniert) |
 | `secrets/proxy_config.json` | Proxy-Konfiguration (nicht versioniert) |
