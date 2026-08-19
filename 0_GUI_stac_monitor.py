@@ -936,6 +936,15 @@ class StacMonitorApp(tk.Tk):
             bordercolor=T["sep"], lightcolor=T["panel"], darkcolor=T["sep"],
             insertcolor=T["fg"], troughcolor=T["root"])
         s.configure("TFrame",    background=T["panel"])
+        s.configure("TNotebook",
+            background=T["panel"], bordercolor=T["sep"], tabmargins=(2, 4, 2, 0))
+        s.configure("TNotebook.Tab",
+            background=T["btn"], foreground=T["fg_dim"],
+            bordercolor=T["sep"], padding=(14, 6), font=("Segoe UI", 9))
+        s.map("TNotebook.Tab",
+            background=[("selected", T["panel"]), ("active", T["btn_hover"])],
+            foreground=[("selected", T["accent"]), ("active", T["fg"])],
+            expand=[("selected", (1, 1, 1, 0))])
         s.configure("TLabelframe",
             background=T["panel"], bordercolor=T["sep"])
         s.configure("TLabelframe.Label",
@@ -987,6 +996,21 @@ class StacMonitorApp(tk.Tk):
             fieldbackground=T["input"], foreground=T["fg"],
             bordercolor=T["sep"], insertcolor=T["fg"],
             selectbackground=T["sel_bg"], selectforeground=T["sel_fg"])
+        s.configure("TCombobox",
+            fieldbackground=T["input"], background=T["btn"], foreground=T["fg"],
+            arrowcolor=T["fg"], bordercolor=T["sep"], insertcolor=T["fg"],
+            selectbackground=T["sel_bg"], selectforeground=T["sel_fg"])
+        s.map("TCombobox",
+            fieldbackground=[("readonly", T["input"]), ("disabled", T["panel"])],
+            foreground=[("readonly", T["fg"]), ("disabled", T["fg_dim"])],
+            background=[("readonly", T["btn"]), ("active", T["btn_hover"])],
+            arrowcolor=[("disabled", T["fg_dim"])])
+        # Popdown-Listbox der Combobox ist ein natives Tk-Widget, nicht per
+        # ttk.Style themebar – daher über die Option-Datenbank einfärben.
+        self.option_add("*TCombobox*Listbox.background", T["input"])
+        self.option_add("*TCombobox*Listbox.foreground", T["fg"])
+        self.option_add("*TCombobox*Listbox.selectBackground", T["sel_bg"])
+        self.option_add("*TCombobox*Listbox.selectForeground", T["sel_fg"])
         s.configure("Vertical.TScrollbar",
             background=T["btn"], troughcolor=T["root"],
             bordercolor=T["sep"], arrowcolor=T["fg"])
