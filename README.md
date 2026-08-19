@@ -9,10 +9,10 @@ DataPackages gelöscht oder verändert.
 ## Schnellstart
 
 1. **Einmalig:** Zugangsdaten hinterlegen, siehe [Einrichtung](#einrichtung)
-2. Tool starten:
+2. Tool starten: WIN-Taste + cmd (Terminal starten)
 
    ```bash
-   python 0_GUI_stac_monitor.py
+   ...>python 0_GUI_stac_monitor.py
    ```
 
 ### Tab STAC
