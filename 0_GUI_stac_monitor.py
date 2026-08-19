@@ -1699,7 +1699,8 @@ class StacMonitorApp(tk.Tk):
 
     _LARGE_ASSET_HINT = (
         '  >50GB - Download nur per HTTP Range-Requests möglich (CloudFront-'
-        'Limit), siehe swisstopo-Anleitung "Downloading Large Assets (> 50 GB)".'
+        'Limit), siehe swisstopo-Anleitung "Downloading Large Assets (> 50 GB)": '
+        'https://docs.geo.admin.ch/download-data/stac-api/large-assets.html'
     )
 
     def _asset_is_large(self, item_id: str, asset_key: str) -> bool:
