@@ -12,7 +12,7 @@ DataPackages gelöscht oder verändert.
 2. Tool starten: WIN-Taste + cmd (Terminal starten)
 
    ```bash
-   ...>python 0_GUI_stac_monitor.py
+   ...>python ...pfad/Ordner/0_GUI_stac_monitor.py ("drag n drop script")
    ```
 
 ### Tab STAC
