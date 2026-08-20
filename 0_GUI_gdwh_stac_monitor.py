@@ -734,6 +734,7 @@ class StacMonitorApp(tk.Tk):
     _GDWH_ALL_KEYS_LABEL   = "Alle GDS-Keys"
     _GDWH_SHOW_FAULTY_BTN_LABEL = "Nur Fehlerhafte anzeigen"
     _GDWH_SHOW_ALL_BTN_LABEL    = "Alle DataPackages anzeigen"
+    _GDWH_AUFTRAGSTYP_OPTIONS   = ["Alle", "RAM", "KRY"]
 
     def _build_gdwh_tab(self, parent):
         sec1 = ttk.LabelFrame(parent, text="1   Umgebung",
@@ -791,7 +792,16 @@ class StacMonitorApp(tk.Tk):
             sec2, text=self._GDWH_SHOW_FAULTY_BTN_LABEL,
             command=self._gdwh_toggle_errors_only,
         )
-        self._gdwh_errors_only_btn.grid(row=1, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        self._gdwh_errors_only_btn.grid(row=1, column=0, columnspan=2, sticky="w", pady=(6, 0))
+
+        ttk.Label(sec2, text="Auftragstyp:").grid(
+            row=1, column=2, sticky="w", padx=(0, 6), pady=(6, 0))
+        self._gdwh_auftragstyp_var = tk.StringVar(value=self._GDWH_AUFTRAGSTYP_OPTIONS[0])
+        self._gdwh_auftragstyp_var.trace_add("write", lambda *_: self._gdwh_apply_filter())
+        ttk.Combobox(
+            sec2, textvariable=self._gdwh_auftragstyp_var,
+            values=self._GDWH_AUFTRAGSTYP_OPTIONS, state="readonly", width=10,
+        ).grid(row=1, column=3, sticky="w", pady=(6, 0))
 
         sec3 = ttk.LabelFrame(parent, text="3   DataPackages",
                               padding=4, style="Section.TLabelframe")
@@ -887,8 +897,9 @@ class StacMonitorApp(tk.Tk):
         return not match.get("area") or not match.get("stac_datetime")
 
     def _gdwh_apply_filter(self):
-        year = self._gdwh_year_var.get().strip()
+        year        = self._gdwh_year_var.get().strip()
         errors_only = self._gdwh_errors_only_var.get()
+        auftragstyp = self._gdwh_auftragstyp_var.get()
         data = self._gdwh_enriched
         if year:
             def _year_matches(item):
@@ -901,9 +912,13 @@ class StacMonitorApp(tk.Tk):
                 m = re.search(r"(?<!\d)(20\d{2})(?!\d)", gdwh_import_date(imp))
                 return m.group(1) == year if m else True
             data = [item for item in data if _year_matches(item)]
+        if auftragstyp != "Alle":
+            data = [item for item in data
+                    if (item[1] or {}).get("auftragstyp", "").strip().lower() == auftragstyp.lower()]
         if errors_only:
             data = [item for item in data if self._gdwh_is_anomaly(item[1])]
-        self._gdwh_populate_tree(data, filtered=bool(year) or errors_only)
+        filtered = bool(year) or errors_only or auftragstyp != "Alle"
+        self._gdwh_populate_tree(data, filtered=filtered)
 
     def _gdwh_populate_tree(self, enriched: List[Tuple], filtered: bool = False):
         self._gdwh_tree.delete(*self._gdwh_tree.get_children())

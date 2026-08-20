@@ -43,11 +43,12 @@ DataPackages gelöscht oder verändert.
      FileMetadata-Eintrag; deutet auf einen unsauberen GDWH-Zustand hin
      (z.B. eine frühere, unvollständige Löschung)
 
-   Der Jahresfilter filtert die bereits geladene Liste sofort weiter, ohne
-   Neu-Laden. Mit **Nur Fehlerhafte anzeigen** blendet die Liste auf die
-   beiden ⚠-Status ein, statt durch alle DataPackages scrollen zu müssen;
-   ein zweiter Klick (**Alle DataPackages anzeigen**) hebt den Filter
-   wieder auf.
+   Der Jahresfilter sowie der **Auftragstyp**-Dropdown (`Alle` / `RAM` /
+   `KRY`) filtern die bereits geladene Liste sofort weiter, ohne Neu-Laden.
+   Mit **Nur Fehlerhafte anzeigen** blendet die Liste auf die beiden
+   ⚠-Status ein, statt durch alle DataPackages scrollen zu müssen; ein
+   zweiter Klick (**Alle DataPackages anzeigen**) hebt den Filter wieder
+   auf. Alle Filter lassen sich kombinieren.
 
 <img width="440" height="559" alt="image" src="https://github.com/user-attachments/assets/74401204-eb8a-4f45-9bf8-1edf99763541" />
 
