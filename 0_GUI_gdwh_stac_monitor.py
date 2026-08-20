@@ -1,5 +1,5 @@
 """
-0_GUI_stac_monitor.py  –  STAC Monitoring-Tool (read-only)
+0_GUI_gdwh_stac_monitor.py  –  STAC Monitoring-Tool (read-only)
 
 Zeigt Items und Assets der Collection "ch.swisstopo.spezialbefliegungen"
 in einer Baumansicht. Funktionen:
@@ -397,6 +397,7 @@ class StacMonitorApp(tk.Tk):
         # GDWH-Tab: rohe Imports + angereicherte (Import, FileMetadata-Match)
         # Paare der aktuell geladenen Umgebung/GDS-Key-Kombination.
         self._gdwh_enriched: List[Tuple[Dict, Optional[Dict]]] = []
+        self._gdwh_current_gds_key: str = ""
         self._gdwh_base_url: str = ""
 
         self._build_ui()
@@ -721,10 +722,12 @@ class StacMonitorApp(tk.Tk):
 
     # ── GDWH-Tab (read-only) ─────────────────────────────────────────────────
 
-    _GDWH_COLS      = ("year", "area", "stac_dt", "status")
-    _GDWH_COL_HEADS = {"year": "Jahr", "area": "Area",
-                        "stac_dt": "StacItemDatetime", "status": "Status"}
-    _GDWH_COL_W     = {"year": 60, "area": 200, "stac_dt": 220, "status": 260}
+    _GDWH_COLS      = ("year", "auftragstyp", "area", "stac_dt", "status", "gds_key")
+    _GDWH_COL_HEADS = {"year": "Jahr", "auftragstyp": "Auftragstyp",
+                        "area": "Area", "stac_dt": "StacItemDatetime", "status": "Status",
+                        "gds_key": "GDS-Key"}
+    _GDWH_COL_W     = {"year": 60, "auftragstyp": 110, "area": 200,
+                        "stac_dt": 220, "status": 260, "gds_key": 130}
 
     _GDWH_LOAD_BTN_LABEL   = "Imports laden"
     _GDWH_RELOAD_BTN_LABEL = "Imports aktualisieren"
@@ -808,6 +811,7 @@ class StacMonitorApp(tk.Tk):
     def _gdwh_on_env_change(self):
         self._gdwh_url_lbl.configure(text=GDWH_ENVIRONMENTS[self._gdwh_env_var.get()])
         self._gdwh_enriched = []
+        self._gdwh_current_gds_key = ""
         self._gdwh_tree.delete(*self._gdwh_tree.get_children())
         self._gdwh_stats_lbl.configure(text="Keine Daten geladen.")
         self._gdwh_load_btn.config(text=self._GDWH_LOAD_BTN_LABEL, style="Amber.TButton")
@@ -817,6 +821,7 @@ class StacMonitorApp(tk.Tk):
         self._gdwh_base_url = GDWH_ENVIRONMENTS[self._gdwh_env_var.get()]
         gds_key = self._gdwh_gds_key_var.get()
         env     = self._gdwh_env_var.get()
+        self._gdwh_current_gds_key = gds_key
         threading.Thread(
             target=self._gdwh_worker_load, args=(env, gds_key), daemon=True).start()
 
@@ -882,6 +887,7 @@ class StacMonitorApp(tk.Tk):
         incomplete_count = 0
         for imp, match in sorted(enriched, key=_year_key, reverse=True):
             area          = match.get("area", "")          if match else ""
+            auftragstyp   = match.get("auftragstyp", "")   if match else ""
             stac_datetime = match.get("stac_datetime", "") if match else ""
 
             year = ""
@@ -906,7 +912,8 @@ class StacMonitorApp(tk.Tk):
 
             self._gdwh_tree.insert(
                 "", "end",
-                values=(year, area or "–", stac_datetime or "–", status),
+                values=(year, auftragstyp or "–", area or "–", stac_datetime or "–",
+                        status, self._gdwh_current_gds_key),
                 tags=(tag,),
             )
 
@@ -940,10 +947,12 @@ class StacMonitorApp(tk.Tk):
             background=T["panel"], bordercolor=T["sep"], tabmargins=(2, 4, 2, 0))
         s.configure("TNotebook.Tab",
             background=T["btn"], foreground=T["fg_dim"],
-            bordercolor=T["sep"], padding=(14, 6), font=("Segoe UI", 9))
+            bordercolor=T["sep"], padding=(12, 5), font=("Segoe UI", 9))
         s.map("TNotebook.Tab",
             background=[("selected", T["panel"]), ("active", T["btn_hover"])],
             foreground=[("selected", T["accent"]), ("active", T["fg"])],
+            padding=[("selected", (16, 8)), ("!selected", (12, 5))],
+            font=[("selected", ("Segoe UI", 9, "bold"))],
             expand=[("selected", (1, 1, 1, 0))])
         s.configure("TLabelframe",
             background=T["panel"], bordercolor=T["sep"])

@@ -1,6 +1,6 @@
 """
 test_functions.py  –  Unit-Tests für die reinen Hilfsfunktionen von
-stac_api.py und 0_GUI_stac_monitor.py (kein Netzwerk-/GUI-Zugriff).
+stac_api.py und 0_GUI_gdwh_stac_monitor.py (kein Netzwerk-/GUI-Zugriff).
 
 Aufruf:  pytest test_functions.py
 """
@@ -10,11 +10,12 @@ from pathlib import Path
 
 import pytest
 
+import gdwh_api as gapi
 import stac_api as api
 
 # Modulname beginnt mit einer Ziffer ("0_GUI_..."), daher kein regulärer
 # Import möglich – Laden über importlib anhand des Dateipfads.
-_gui_path = Path(__file__).parent / "0_GUI_stac_monitor.py"
+_gui_path = Path(__file__).parent / "0_GUI_gdwh_stac_monitor.py"
 _spec = importlib.util.spec_from_file_location("gui_stac_monitor", _gui_path)
 gui = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(gui)
@@ -122,7 +123,7 @@ def test_item_area_none_found():
     assert api.stac_item_area(item) == ""
 
 
-# ─── 0_GUI_stac_monitor._fmt_size ──────────────────────────────────────────
+# ─── 0_GUI_gdwh_stac_monitor._fmt_size ─────────────────────────────────────
 
 def test_fmt_size_none():
     assert gui._fmt_size(None) == "–"
@@ -144,7 +145,7 @@ def test_fmt_size_gb():
     assert gui._fmt_size(3 * 1024 ** 3) == "3.00 GB"
 
 
-# ─── 0_GUI_stac_monitor._fmt_date ──────────────────────────────────────────
+# ─── 0_GUI_gdwh_stac_monitor._fmt_date ─────────────────────────────────────
 
 def test_fmt_date_none():
     assert gui._fmt_date(None) == "–"
@@ -158,7 +159,7 @@ def test_fmt_date_unparsable_fallback():
     assert gui._fmt_date("2025-09-19-irgendwas") == "2025-09-19"
 
 
-# ─── 0_GUI_stac_monitor._status_label ──────────────────────────────────────
+# ─── 0_GUI_gdwh_stac_monitor._status_label ─────────────────────────────────
 
 def test_status_label_none():
     text, tag = gui._status_label(None)
@@ -185,6 +186,79 @@ def test_status_label_timeout():
 def test_status_label_other_error():
     text, tag = gui._status_label(-3)
     assert tag == "asset_warn"
+
+
+# ─── gdwh_api._parse_custom_attributes (Auftragstyp/Area/Jahr-Extraktion) ──
+# Speist die im GDWH-Tab neu angezeigten Spalten "Auftragstyp" und "GDS-Key".
+
+def test_parse_custom_attributes_extracts_auftragstyp():
+    xml = "<auftragstyp>RAM</auftragstyp><area>RANDA</area>"
+    result = gapi._parse_custom_attributes(xml)
+    assert result["auftragstyp"] == "RAM"
+    assert result["area"] == "RANDA"
+
+
+def test_parse_custom_attributes_accepts_alternate_tag_names():
+    xml = "<orderType>ADS</orderType>"
+    assert gapi._parse_custom_attributes(xml)["auftragstyp"] == "ADS"
+
+
+def test_parse_custom_attributes_empty_fragment():
+    result = gapi._parse_custom_attributes("")
+    assert result == {"area": "", "line_id": "", "commentary": "",
+                       "auftragstyp": "", "stac_datetime": ""}
+
+
+def test_parse_custom_attributes_unparsable_fragment():
+    result = gapi._parse_custom_attributes("<not-closed>")
+    assert result["auftragstyp"] == ""
+
+
+# ─── gdwh_api.gdwh_index_file_metadata_by_import ───────────────────────────
+
+def test_index_file_metadata_by_import_maps_auftragstyp():
+    file_metadata = [{
+        "importUuid": "uuid-1",
+        "customAttributes": "<auftragstyp>RAM</auftragstyp><area>RANDA</area>",
+        "temporalKey": 2024,
+    }]
+    index = gapi.gdwh_index_file_metadata_by_import(file_metadata)
+    assert index["uuid-1"]["auftragstyp"] == "RAM"
+    assert index["uuid-1"]["area"] == "RANDA"
+    assert index["uuid-1"]["year"] == "2024"
+
+
+def test_index_file_metadata_by_import_first_match_wins():
+    file_metadata = [
+        {"importUuid": "uuid-1", "customAttributes": "<auftragstyp>RAM</auftragstyp>"},
+        {"importUuid": "uuid-1", "customAttributes": "<auftragstyp>ADS</auftragstyp>"},
+    ]
+    index = gapi.gdwh_index_file_metadata_by_import(file_metadata)
+    assert index["uuid-1"]["auftragstyp"] == "RAM"
+
+
+def test_index_file_metadata_by_import_skips_missing_uuid():
+    file_metadata = [{"customAttributes": "<auftragstyp>RAM</auftragstyp>"}]
+    assert gapi.gdwh_index_file_metadata_by_import(file_metadata) == {}
+
+
+# ─── gdwh_api.gdwh_import_id / gdwh_import_date ────────────────────────────
+
+def test_gdwh_import_id_prefers_uuid():
+    assert gapi.gdwh_import_id({"uuid": "abc", "id": "other"}) == "abc"
+
+
+def test_gdwh_import_id_missing_returns_placeholder():
+    assert gapi.gdwh_import_id({}) == "?"
+
+
+def test_gdwh_import_date_truncates_and_replaces_t():
+    imp = {"importDate": "2024-05-01T12:34:56.789Z"}
+    assert gapi.gdwh_import_date(imp) == "2024-05-01 12:34"
+
+
+def test_gdwh_import_date_missing_returns_placeholder():
+    assert gapi.gdwh_import_date({}) == "–"
 
 
 if __name__ == "__main__":

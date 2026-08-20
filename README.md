@@ -12,7 +12,7 @@ DataPackages gelöscht oder verändert.
 2. Tool starten: WIN-Taste + cmd (Terminal starten)
 
    ```bash
-   ...>python ...pfad/Ordner/0_GUI_stac_monitor.py ("drag n drop script")
+   ...>python ...pfad/Ordner/0_GUI_gdwh_stac_monitor.py ("drag n drop script")
    ```
 
 ### Tab STAC
@@ -31,8 +31,8 @@ DataPackages gelöscht oder verändert.
    die aktuelle Windows-Session (kein Credentials-Schritt nötig)
 2. **GDS-Key** wählen (`SB_DOP`, `SB_DOP_16`, `SB_DSM`, `SB_DSM_PUNKTWOLKE`),
    optional **Jahr** eintragen, dann **Imports laden**
-3. Die Liste zeigt pro DataPackage Jahr, Area, StacItemDatetime und einen
-   Status:
+3. Die Liste zeigt pro DataPackage Jahr, Auftragstyp, Area, StacItemDatetime,
+   einen Status sowie (rechts, nach Status) den GDS-Key des Imports:
    - **✓ OK** – FileMetadata-Match vorhanden, Area und StacItemDatetime
      gesetzt
    - **⚠ unvollständig** – FileMetadata-Match vorhanden, aber Area oder
@@ -72,8 +72,8 @@ DataPackages gelöscht oder verändert.
   angedockten Viewer-Fenster
 - Statistik (OK/Fehler/Gesamtgrösse), Item-JSON-Detailansicht,
   Hell/Dark-Theme
-- **Tab GDWH** – Liste der DataPackages je GDS-Key mit Jahr/Area/
-  StacItemDatetime und Validitäts-Status (siehe [Tab GDWH](#tab-gdwh))
+- **Tab GDWH** – Liste der DataPackages je GDS-Key mit Jahr/Auftragstyp/Area/
+  StacItemDatetime, Validitäts-Status und GDS-Key (siehe [Tab GDWH](#tab-gdwh))
 
 ## Voraussetzungen
 
@@ -111,7 +111,7 @@ und verbindet sich direkt, ohne Proxy.
 
 | Datei | Zweck |
 |---|---|
-| `0_GUI_stac_monitor.py` | GUI-Anwendung (Tkinter) |
+| `0_GUI_gdwh_stac_monitor.py` | GUI-Anwendung (Tkinter) |
 | `stac_api.py` | STAC-API-Hilfsfunktionen (inkl. Download) |
 | `gdwh_api.py` | GDWH-API-Hilfsfunktionen (read-only) |
 | `secrets/stac_credentials.json` | Zugangsdaten INT/PROD (nicht versioniert) |
