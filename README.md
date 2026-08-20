@@ -13,6 +13,7 @@ Read-only-GUI.
    ```bash
    python pfad/0_GUI_gdwh_stac_monitor.py
    ```
+<img width="793" height="578" alt="image" src="https://github.com/user-attachments/assets/ad3b97c8-11b8-45bd-9cb6-4d6a0f3754cf" />
 
 ### Tab STAC
 
@@ -50,8 +51,6 @@ Read-only-GUI.
    ein, statt durch alle DataPackages scrollen zu müssen; ein zweiter
    Klick (**Alle DataPackages anzeigen**) hebt den Filter wieder auf. Alle
    Filter lassen sich kombinieren.
-
-<img width="440" height="559" alt="image" src="https://github.com/user-attachments/assets/74401204-eb8a-4f45-9bf8-1edf99763541" />
 
 ## Funktionen
 
