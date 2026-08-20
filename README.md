@@ -24,7 +24,7 @@ Read-only-GUI.
    (oder **Alle auswählen**)
 6. Im Bereich **STAC-Funktionen**: **Assets prüfen (HEAD)** für Status &
    Grösse, danach je nach Bedarf herunterladen oder exportieren
-7. Asset **GUI-Viewer**: ausgewählte GeoTIFFs bzw. Tagesübersichten direkt in map.geo.admin.ch anzeigen, wahlweise im Browser oder in einem angedockten Viewer-Fenster
+7. Asset **GUI-Viewer**: einzeln ausgewählte Assets (ausser 16bit und copc) direkt in map.geo.admin.ch anzeigen, wahlweise im Browser oder in einem angedockten Viewer-Fenster
 
 ### Tab GDWH
 
