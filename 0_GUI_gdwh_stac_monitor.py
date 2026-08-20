@@ -394,9 +394,9 @@ class StacMonitorApp(tk.Tk):
         self._viewer_profile_dir: Optional[str] = None
         self._reposition_job: Optional[str] = None
 
-        # GDWH-Tab: rohe Imports + angereicherte (Import, FileMetadata-Match)
-        # Paare der aktuell geladenen Umgebung/GDS-Key-Kombination.
-        self._gdwh_enriched: List[Tuple[Dict, Optional[Dict]]] = []
+        # GDWH-Tab: rohe Imports + angereicherte (Import, FileMetadata-Match, GDS-Key)
+        # Tripel der aktuell geladenen Umgebung/GDS-Key-Auswahl (ein oder alle Keys).
+        self._gdwh_enriched: List[Tuple[Dict, Optional[Dict], str]] = []
         self._gdwh_current_gds_key: str = ""
         self._gdwh_base_url: str = ""
 
@@ -731,6 +731,9 @@ class StacMonitorApp(tk.Tk):
 
     _GDWH_LOAD_BTN_LABEL   = "Imports laden"
     _GDWH_RELOAD_BTN_LABEL = "Imports aktualisieren"
+    _GDWH_ALL_KEYS_LABEL   = "Alle GDS-Keys"
+    _GDWH_SHOW_FAULTY_BTN_LABEL = "Nur Fehlerhafte anzeigen"
+    _GDWH_SHOW_ALL_BTN_LABEL    = "Alle DataPackages anzeigen"
 
     def _build_gdwh_tab(self, parent):
         sec1 = ttk.LabelFrame(parent, text="1   Umgebung",
@@ -763,7 +766,7 @@ class StacMonitorApp(tk.Tk):
         self._gdwh_gds_key_var = tk.StringVar(value=GDWH_GDS_KEYS[0])
         gdwh_gds_combo = ttk.Combobox(
             sec2, textvariable=self._gdwh_gds_key_var,
-            values=GDWH_GDS_KEYS, state="readonly", width=24,
+            values=[self._GDWH_ALL_KEYS_LABEL] + GDWH_GDS_KEYS, state="readonly", width=24,
         )
         gdwh_gds_combo.grid(row=0, column=1, sticky="w", padx=(0, 16))
 
@@ -782,6 +785,13 @@ class StacMonitorApp(tk.Tk):
             command=self._gdwh_load, style="Amber.TButton",
         )
         self._gdwh_load_btn.grid(row=0, column=5, padx=(16, 0))
+
+        self._gdwh_errors_only_var = tk.BooleanVar(value=False)
+        self._gdwh_errors_only_btn = ttk.Button(
+            sec2, text=self._GDWH_SHOW_FAULTY_BTN_LABEL,
+            command=self._gdwh_toggle_errors_only,
+        )
+        self._gdwh_errors_only_btn.grid(row=1, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
         sec3 = ttk.LabelFrame(parent, text="3   DataPackages",
                               padding=4, style="Section.TLabelframe")
@@ -822,24 +832,35 @@ class StacMonitorApp(tk.Tk):
         gds_key = self._gdwh_gds_key_var.get()
         env     = self._gdwh_env_var.get()
         self._gdwh_current_gds_key = gds_key
-        threading.Thread(
-            target=self._gdwh_worker_load, args=(env, gds_key), daemon=True).start()
+        if gds_key == self._GDWH_ALL_KEYS_LABEL:
+            threading.Thread(
+                target=self._gdwh_worker_load_all, args=(env,), daemon=True).start()
+        else:
+            threading.Thread(
+                target=self._gdwh_worker_load, args=(env, [gds_key]), daemon=True).start()
 
-    def _gdwh_worker_load(self, env: str, gds_key: str):
+    def _gdwh_worker_load_all(self, env: str):
+        self._gdwh_worker_load(env, GDWH_GDS_KEYS)
+
+    def _gdwh_worker_load(self, env: str, gds_keys: List[str]):
         try:
-            self._log_write(f"[GDWH] Lade Imports für {env}/{gds_key} …\n")
-            imports = gdwh_get_imports(self._gdwh_base_url, gds_key)
-            self._log_write(f"[GDWH] {len(imports)} Import(s) gefunden. "
-                            f"Lade FileMetadata …\n")
-            file_metadata = gdwh_search_file_metadata(self._gdwh_base_url, gds_key)
-            meta_index = gdwh_index_file_metadata_by_import(file_metadata)
+            enriched: List[Tuple[Dict, Optional[Dict], str]] = []
+            total_metadata = 0
+            for gds_key in gds_keys:
+                self._log_write(f"[GDWH] Lade Imports für {env}/{gds_key} …\n")
+                imports = gdwh_get_imports(self._gdwh_base_url, gds_key)
+                self._log_write(f"[GDWH] {len(imports)} Import(s) gefunden. "
+                                f"Lade FileMetadata …\n")
+                file_metadata = gdwh_search_file_metadata(self._gdwh_base_url, gds_key)
+                meta_index = gdwh_index_file_metadata_by_import(file_metadata)
+                total_metadata += len(file_metadata)
 
-            enriched = []
-            for imp in imports:
-                match = meta_index.get(gdwh_import_id(imp))
-                enriched.append((imp, match))
+                for imp in imports:
+                    match = meta_index.get(gdwh_import_id(imp))
+                    enriched.append((imp, match, gds_key))
+
             self._gdwh_enriched = enriched
-            self._log_write(f"[GDWH] {len(file_metadata)} FileMetadata-Eintrag/Einträge "
+            self._log_write(f"[GDWH] {total_metadata} FileMetadata-Eintrag/Einträge "
                             f"gefunden, {len(enriched)} Import(s) angereichert.\n")
             self.after(0, self._gdwh_apply_filter)
         except Exception as exc:
@@ -849,12 +870,29 @@ class StacMonitorApp(tk.Tk):
             self.after(0, lambda: self._gdwh_load_btn.config(
                 state="normal", text=self._GDWH_RELOAD_BTN_LABEL, style="TButton"))
 
+    def _gdwh_toggle_errors_only(self):
+        active = not self._gdwh_errors_only_var.get()
+        self._gdwh_errors_only_var.set(active)
+        self._gdwh_errors_only_btn.config(
+            text=self._GDWH_SHOW_ALL_BTN_LABEL if active else self._GDWH_SHOW_FAULTY_BTN_LABEL,
+            style="Amber.TButton" if active else "TButton")
+        self._gdwh_apply_filter()
+
+    @staticmethod
+    def _gdwh_is_anomaly(match: Optional[Dict]) -> bool:
+        """True, wenn der Import kein FileMetadata-Match hat oder Area/
+        StacItemDatetime fehlt (= "Leiche" bzw. unvollständiges Paket)."""
+        if match is None:
+            return True
+        return not match.get("area") or not match.get("stac_datetime")
+
     def _gdwh_apply_filter(self):
         year = self._gdwh_year_var.get().strip()
+        errors_only = self._gdwh_errors_only_var.get()
         data = self._gdwh_enriched
         if year:
             def _year_matches(item):
-                imp, match = item
+                imp, match, _gds_key = item
                 if match:
                     for src in (match.get("stac_datetime", ""), match.get("year", "")):
                         m = re.search(r"(?<!\d)(20\d{2})(?!\d)", src)
@@ -863,7 +901,9 @@ class StacMonitorApp(tk.Tk):
                 m = re.search(r"(?<!\d)(20\d{2})(?!\d)", gdwh_import_date(imp))
                 return m.group(1) == year if m else True
             data = [item for item in data if _year_matches(item)]
-        self._gdwh_populate_tree(data, filtered=bool(year))
+        if errors_only:
+            data = [item for item in data if self._gdwh_is_anomaly(item[1])]
+        self._gdwh_populate_tree(data, filtered=bool(year) or errors_only)
 
     def _gdwh_populate_tree(self, enriched: List[Tuple], filtered: bool = False):
         self._gdwh_tree.delete(*self._gdwh_tree.get_children())
@@ -874,7 +914,7 @@ class StacMonitorApp(tk.Tk):
             return
 
         def _year_key(item):
-            imp, match = item
+            imp, match, _gds_key = item
             if match:
                 for src in (match.get("stac_datetime", ""), match.get("year", "")):
                     m = re.search(r"(?<!\d)(20\d{2})(?!\d)", src)
@@ -885,7 +925,7 @@ class StacMonitorApp(tk.Tk):
 
         no_match_count = 0
         incomplete_count = 0
-        for imp, match in sorted(enriched, key=_year_key, reverse=True):
+        for imp, match, gds_key in sorted(enriched, key=_year_key, reverse=True):
             area          = match.get("area", "")          if match else ""
             auftragstyp   = match.get("auftragstyp", "")   if match else ""
             stac_datetime = match.get("stac_datetime", "") if match else ""
@@ -913,7 +953,7 @@ class StacMonitorApp(tk.Tk):
             self._gdwh_tree.insert(
                 "", "end",
                 values=(year, auftragstyp or "–", area or "–", stac_datetime or "–",
-                        status, self._gdwh_current_gds_key),
+                        status, gds_key),
                 tags=(tag,),
             )
 

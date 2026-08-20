@@ -29,7 +29,9 @@ DataPackages gelöscht oder verändert.
 
 1. **Umgebung** (INT/PROD) wählen – Authentifizierung läuft automatisch über
    die aktuelle Windows-Session (kein Credentials-Schritt nötig)
-2. **GDS-Key** wählen (`SB_DOP`, `SB_DOP_16`, `SB_DSM`, `SB_DSM_PUNKTWOLKE`),
+2. **GDS-Key** wählen (`SB_DOP`, `SB_DOP_16`, `SB_DSM`, `SB_DSM_PUNKTWOLKE`,
+   oder **Alle GDS-Keys** für alle vier zusammen – die GDWH-API kennt keinen
+   eigenen "Alle"-Endpunkt, das Tool fragt die Keys dafür nacheinander ab),
    optional **Jahr** eintragen, dann **Imports laden**
 3. Die Liste zeigt pro DataPackage Jahr, Auftragstyp, Area, StacItemDatetime,
    einen Status sowie (rechts, nach Status) den GDS-Key des Imports:
@@ -42,7 +44,10 @@ DataPackages gelöscht oder verändert.
      (z.B. eine frühere, unvollständige Löschung)
 
    Der Jahresfilter filtert die bereits geladene Liste sofort weiter, ohne
-   Neu-Laden.
+   Neu-Laden. Mit **Nur Fehlerhafte anzeigen** blendet die Liste auf die
+   beiden ⚠-Status ein, statt durch alle DataPackages scrollen zu müssen;
+   ein zweiter Klick (**Alle DataPackages anzeigen**) hebt den Filter
+   wieder auf.
 
 <img width="440" height="559" alt="image" src="https://github.com/user-attachments/assets/74401204-eb8a-4f45-9bf8-1edf99763541" />
 
@@ -72,8 +77,10 @@ DataPackages gelöscht oder verändert.
   angedockten Viewer-Fenster
 - Statistik (OK/Fehler/Gesamtgrösse), Item-JSON-Detailansicht,
   Hell/Dark-Theme
-- **Tab GDWH** – Liste der DataPackages je GDS-Key mit Jahr/Auftragstyp/Area/
-  StacItemDatetime, Validitäts-Status und GDS-Key (siehe [Tab GDWH](#tab-gdwh))
+- **Tab GDWH** – Liste der DataPackages je GDS-Key (einzeln oder für alle
+  GDS-Keys zusammen) mit Jahr/Auftragstyp/Area/StacItemDatetime,
+  Validitäts-Status und GDS-Key, inkl. Filter auf nur fehlerhafte
+  DataPackages (siehe [Tab GDWH](#tab-gdwh))
 
 ## Voraussetzungen
 
