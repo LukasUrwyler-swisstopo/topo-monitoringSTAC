@@ -803,6 +803,13 @@ class StacMonitorApp(tk.Tk):
             values=self._GDWH_AUFTRAGSTYP_OPTIONS, state="readonly", width=10,
         ).grid(row=1, column=3, sticky="w", pady=(6, 0))
 
+        ttk.Label(sec2, text="Area [optional]:").grid(
+            row=1, column=4, sticky="w", padx=(16, 6), pady=(6, 0))
+        self._gdwh_area_var = tk.StringVar()
+        self._gdwh_area_var.trace_add("write", lambda *_: self._gdwh_apply_filter())
+        ttk.Entry(sec2, textvariable=self._gdwh_area_var, width=16).grid(
+            row=1, column=5, sticky="w", pady=(6, 0))
+
         sec3 = ttk.LabelFrame(parent, text="3   DataPackages",
                               padding=4, style="Section.TLabelframe")
         sec3.pack(fill="both", expand=True, pady=(0, 4))
@@ -900,6 +907,7 @@ class StacMonitorApp(tk.Tk):
         year        = self._gdwh_year_var.get().strip()
         errors_only = self._gdwh_errors_only_var.get()
         auftragstyp = self._gdwh_auftragstyp_var.get()
+        area_query  = self._gdwh_area_var.get().strip().lower()
         data = self._gdwh_enriched
         if year:
             def _year_matches(item):
@@ -915,9 +923,12 @@ class StacMonitorApp(tk.Tk):
         if auftragstyp != "Alle":
             data = [item for item in data
                     if (item[1] or {}).get("auftragstyp", "").strip().lower() == auftragstyp.lower()]
+        if area_query:
+            data = [item for item in data
+                    if area_query in (item[1] or {}).get("area", "").lower()]
         if errors_only:
             data = [item for item in data if self._gdwh_is_anomaly(item[1])]
-        filtered = bool(year) or errors_only or auftragstyp != "Alle"
+        filtered = bool(year) or errors_only or auftragstyp != "Alle" or bool(area_query)
         self._gdwh_populate_tree(data, filtered=filtered)
 
     def _gdwh_populate_tree(self, enriched: List[Tuple], filtered: bool = False):
