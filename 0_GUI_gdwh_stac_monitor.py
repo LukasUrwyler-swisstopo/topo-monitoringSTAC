@@ -397,6 +397,7 @@ class StacMonitorApp(tk.Tk):
         # GDWH-Tab: rohe Imports + angereicherte (Import, FileMetadata-Match, GDS-Key)
         # Tripel der aktuell geladenen Umgebung/GDS-Key-Auswahl (ein oder alle Keys).
         self._gdwh_enriched: List[Tuple[Dict, Optional[Dict], str]] = []
+        self._gdwh_total_leichen: int = 0
         self._gdwh_current_gds_key: str = ""
         self._gdwh_base_url: str = ""
 
@@ -734,6 +735,8 @@ class StacMonitorApp(tk.Tk):
     _GDWH_ALL_KEYS_LABEL   = "Alle GDS-Keys"
     _GDWH_SHOW_FAULTY_BTN_LABEL = "Nur Fehlerhafte anzeigen"
     _GDWH_SHOW_ALL_BTN_LABEL    = "Alle DataPackages anzeigen"
+    _GDWH_LEICHEN_BTN_LABEL      = "Historische GDWH-Leichen auflisten"
+    _GDWH_LEICHEN_BTN_LABEL_BACK = "Aktive GDWH-Daten anzeigen"
     _GDWH_AUFTRAGSTYP_OPTIONS   = ["Alle", "RAM", "KRY"]
 
     def _build_gdwh_tab(self, parent):
@@ -794,6 +797,19 @@ class StacMonitorApp(tk.Tk):
         )
         self._gdwh_errors_only_btn.grid(row=1, column=0, columnspan=2, sticky="w", pady=(6, 0))
 
+        # Aktive Daten (Standard) vs. historische Leichen: ein Import ohne
+        # FileMetadata-Match (match is None) existiert nicht mehr wirklich in
+        # GDWH – nur der Historieneintrag in GET /data/imports bleibt. Das ist
+        # KEIN "Fehlerhaftes" Package (siehe _gdwh_is_anomaly) mehr, sondern
+        # eine eigene, separat einsehbare Kategorie, damit die Standard-/
+        # Fehler-Ansicht nur noch wirklich in GDWH vorhandene Daten zeigt.
+        self._gdwh_show_leichen_var = tk.BooleanVar(value=False)
+        self._gdwh_leichen_btn = ttk.Button(
+            sec2, text=self._GDWH_LEICHEN_BTN_LABEL,
+            command=self._gdwh_toggle_leichen,
+        )
+        self._gdwh_leichen_btn.grid(row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
+
         ttk.Label(sec2, text="Auftragstyp:").grid(
             row=1, column=2, sticky="w", padx=(0, 6), pady=(6, 0))
         self._gdwh_auftragstyp_var = tk.StringVar(value=self._GDWH_AUFTRAGSTYP_OPTIONS[0])
@@ -838,10 +854,13 @@ class StacMonitorApp(tk.Tk):
     def _gdwh_on_env_change(self):
         self._gdwh_url_lbl.configure(text=GDWH_ENVIRONMENTS[self._gdwh_env_var.get()])
         self._gdwh_enriched = []
+        self._gdwh_total_leichen = 0
         self._gdwh_current_gds_key = ""
         self._gdwh_tree.delete(*self._gdwh_tree.get_children())
         self._gdwh_stats_lbl.configure(text="Keine Daten geladen.")
         self._gdwh_load_btn.config(text=self._GDWH_LOAD_BTN_LABEL, style="Amber.TButton")
+        self._gdwh_show_leichen_var.set(False)
+        self._gdwh_leichen_btn.config(text=self._GDWH_LEICHEN_BTN_LABEL, style="TButton")
 
     def _gdwh_load(self):
         self._gdwh_load_btn.config(state="disabled")
@@ -890,25 +909,51 @@ class StacMonitorApp(tk.Tk):
     def _gdwh_toggle_errors_only(self):
         active = not self._gdwh_errors_only_var.get()
         self._gdwh_errors_only_var.set(active)
+        # Fehlerhaft-Modus und Leichen-Modus schliessen sich aus: beide
+        # filtern auf entgegengesetzte match-Kategorien (siehe
+        # _gdwh_apply_filter), eine Kombination würde immer leer sein.
+        if active and self._gdwh_show_leichen_var.get():
+            self._gdwh_show_leichen_var.set(False)
+            self._gdwh_leichen_btn.config(text=self._GDWH_LEICHEN_BTN_LABEL, style="TButton")
         self._gdwh_errors_only_btn.config(
             text=self._GDWH_SHOW_ALL_BTN_LABEL if active else self._GDWH_SHOW_FAULTY_BTN_LABEL,
             style="Amber.TButton" if active else "TButton")
         self._gdwh_apply_filter()
 
+    def _gdwh_toggle_leichen(self):
+        active = not self._gdwh_show_leichen_var.get()
+        self._gdwh_show_leichen_var.set(active)
+        if active and self._gdwh_errors_only_var.get():
+            self._gdwh_errors_only_var.set(False)
+            self._gdwh_errors_only_btn.config(
+                text=self._GDWH_SHOW_FAULTY_BTN_LABEL, style="TButton")
+        self._gdwh_leichen_btn.config(
+            text=self._GDWH_LEICHEN_BTN_LABEL_BACK if active
+                 else self._GDWH_LEICHEN_BTN_LABEL,
+            style="Amber.TButton" if active else "TButton")
+        self._gdwh_apply_filter()
+
     @staticmethod
     def _gdwh_is_anomaly(match: Optional[Dict]) -> bool:
-        """True, wenn der Import kein FileMetadata-Match hat oder Area/
-        StacItemDatetime fehlt (= "Leiche" bzw. unvollständiges Paket)."""
+        """True, wenn der Import FileMetadata hat, aber Area/StacItemDatetime
+        fehlt (= unvollständiges, aber real noch in GDWH vorhandenes Paket).
+        Imports OHNE FileMetadata-Match sind keine "Fehlerhaften" mehr,
+        sondern historische Leichen (separate Ansicht, siehe
+        _gdwh_toggle_leichen) – die Daten existieren schlicht nicht mehr."""
         if match is None:
-            return True
+            return False
         return not match.get("area") or not match.get("stac_datetime")
 
     def _gdwh_apply_filter(self):
-        year        = self._gdwh_year_var.get().strip()
-        errors_only = self._gdwh_errors_only_var.get()
-        auftragstyp = self._gdwh_auftragstyp_var.get()
-        area_query  = self._gdwh_area_var.get().strip().lower()
-        data = self._gdwh_enriched
+        year         = self._gdwh_year_var.get().strip()
+        errors_only  = self._gdwh_errors_only_var.get()
+        leichen_mode = self._gdwh_show_leichen_var.get()
+        auftragstyp  = self._gdwh_auftragstyp_var.get()
+        area_query   = self._gdwh_area_var.get().strip().lower()
+        # Aktive Daten (Standard) vs. historische Leichen: siehe
+        # _gdwh_toggle_leichen / _gdwh_is_anomaly.
+        data = [item for item in self._gdwh_enriched
+                if (item[1] is None) == leichen_mode]
         if year:
             def _year_matches(item):
                 imp, match, _gds_key = item
@@ -929,14 +974,21 @@ class StacMonitorApp(tk.Tk):
         if errors_only:
             data = [item for item in data if self._gdwh_is_anomaly(item[1])]
         filtered = bool(year) or errors_only or auftragstyp != "Alle" or bool(area_query)
-        self._gdwh_populate_tree(data, filtered=filtered)
+        self._gdwh_total_leichen = sum(
+            1 for _, match, _gds_key in self._gdwh_enriched if match is None)
+        self._gdwh_populate_tree(data, filtered=filtered, leichen_mode=leichen_mode)
 
-    def _gdwh_populate_tree(self, enriched: List[Tuple], filtered: bool = False):
+    def _gdwh_populate_tree(self, enriched: List[Tuple], filtered: bool = False,
+                             leichen_mode: bool = False):
         self._gdwh_tree.delete(*self._gdwh_tree.get_children())
         if not enriched:
-            self._gdwh_stats_lbl.configure(
-                text="0 DataPackages nach Filter." if filtered
-                     else "0 DataPackages gefunden.")
+            if leichen_mode:
+                msg = "0 historische Leichen gefunden."
+            elif filtered:
+                msg = "0 DataPackages nach Filter."
+            else:
+                msg = "0 DataPackages gefunden."
+            self._gdwh_stats_lbl.configure(text=msg)
             return
 
         def _year_key(item):
@@ -949,7 +1001,6 @@ class StacMonitorApp(tk.Tk):
             m = re.search(r"(?<!\d)(20\d{2})(?!\d)", gdwh_import_date(imp))
             return int(m.group(1)) if m else 0
 
-        no_match_count = 0
         incomplete_count = 0
         for imp, match, gds_key in sorted(enriched, key=_year_key, reverse=True):
             area          = match.get("area", "")          if match else ""
@@ -968,8 +1019,9 @@ class StacMonitorApp(tk.Tk):
                 year = m.group(1) if m else "????"
 
             if match is None:
-                status, tag = "⚠ Kein FileMetadata-Match", "asset_err"
-                no_match_count += 1
+                # Nur im Leichen-Modus erreichbar (siehe _gdwh_apply_filter) –
+                # keine Daten mehr in GDWH, nur Historieneintrag.
+                status, tag = "⚠ Historisch — keine Daten mehr in GDWH", "asset_err"
             elif not area or not stac_datetime:
                 status, tag = "⚠ unvollständig", "asset_warn"
                 incomplete_count += 1
@@ -984,12 +1036,17 @@ class StacMonitorApp(tk.Tk):
             )
 
         total = len(enriched)
-        anomaly_note = ""
-        if no_match_count or incomplete_count:
-            anomaly_note = (f"  |  ⚠ {no_match_count} ohne Match, "
-                            f"{incomplete_count} unvollständig")
+        if leichen_mode:
+            self._gdwh_stats_lbl.configure(
+                text=f"{total} historische Leiche(n) — bereits nicht mehr in GDWH.")
+            return
+
+        anomaly_note = f"  |  ⚠ {incomplete_count} unvollständig" if incomplete_count else ""
+        total_leichen = getattr(self, "_gdwh_total_leichen", 0)
+        leichen_note = (f"  |  {total_leichen} historische Leiche(n) ausgeblendet "
+                        f"(Button „{self._GDWH_LEICHEN_BTN_LABEL}“)") if total_leichen else ""
         self._gdwh_stats_lbl.configure(
-            text=f"{total} DataPackage(s) geladen{anomaly_note}")
+            text=f"{total} DataPackage(s) geladen{anomaly_note}{leichen_note}")
 
     # ── Theme ─────────────────────────────────────────────────────────────────
 
