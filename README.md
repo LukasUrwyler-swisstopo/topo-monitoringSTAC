@@ -1,18 +1,17 @@
 # STAC Monitor – ch.swisstopo.spezialbefliegungen
 
-Desktop-Tool (Tkinter) zur Überwachung der STAC-Collection
+GUI-Tool zur Überwachung der **STAC-Collection**
 `ch.swisstopo.spezialbefliegungen` auf INT- und PROD-Umgebung von swisstopo /
-BGDI, sowie der zugehörigen DataPackages im **Geodata-Warehouse (GDWH)**.
-Read-only gegenüber beiden Systemen – es werden keine Items/Assets/
-DataPackages gelöscht oder verändert.
+BGDI, sowie DataPackages im **Geodata-Warehouse (GDWH)**.
+Read-only-GUI.
 
 ## Schnellstart
 
 1. **Einmalig:** Zugangsdaten hinterlegen, siehe [Einrichtung](#einrichtung)
-2. Tool starten: WIN-Taste + cmd (Terminal starten)
+2. Tool starten: WIN-Taste + cmd (Terminal starten):
 
    ```bash
-   ...>python ...pfad/Ordner/0_GUI_gdwh_stac_monitor.py ("drag n drop script")
+   python pfad/0_GUI_gdwh_stac_monitor.py
    ```
 
 ### Tab STAC
