@@ -103,7 +103,7 @@ def gdwh_get_imports(base_url: str, gds_key: str) -> List[Dict]:
     """Holt alle DataPackages (Imports) für einen GDS-Key."""
     url = f"{base_url}api/geodatasets/{gds_key}/data/imports"
     with _gdwh_session() as s:
-        r = s.get(url, timeout=(30, 60))
+        r = s.get(url, timeout=(30, 300))
     r.raise_for_status()
     data = r.json()
     if isinstance(data, list):
@@ -163,7 +163,7 @@ def gdwh_search_file_metadata(base_url: str, gds_key: str) -> List[Dict]:
     url = f"{base_url}api/geodatasets/{gds_key}/fileMetadata/search"
     payload = {"gdsKey": gds_key, "mostRecent": True}
     with _gdwh_session() as s:
-        r = s.post(url, json=payload, timeout=(30, 60))
+        r = s.post(url, json=payload, timeout=(30, 300))
     r.raise_for_status()
     data = r.json()
     return data if isinstance(data, list) else []
