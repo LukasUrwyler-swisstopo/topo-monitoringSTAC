@@ -7,7 +7,10 @@ Read-only-GUI.
 
 ## Schnellstart
 
-1. **Einmalig:** Zugangsdaten hinterlegen, siehe [Einrichtung](#einrichtung)
+1. **Einmalig:** Für den STAC-Tab braucht das Script den `secrets/`-Ordner mit
+   den entsprechenden .json-Dateien (Zugangsdaten). Diese müssen vom
+   Benutzer bei TBKN/swisstopo angefragt werden, siehe
+   [Einrichtung](#einrichtung)
 2. Tool starten: WIN-Taste + cmd (Terminal starten):
 
    ```bash
