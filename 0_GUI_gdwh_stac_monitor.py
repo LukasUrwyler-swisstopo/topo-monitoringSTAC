@@ -364,6 +364,11 @@ class StacMonitorApp(tk.Tk):
     _SHOW_FAULTY_BTN_LABEL   = "Fehlerhafte anzeigen"
     _SHOW_NO_THUMB_BTN_LABEL = "ITEMs ohne Thumbnail"
     _SHOW_ALL_BTN_LABEL      = "Alle Assets wieder anzeigen"
+
+    _SELECT_ALL_BTN_LABEL   = "Alles auswählen"
+    _DESELECT_ALL_BTN_LABEL = "Alles abwählen"
+    _COLLAPSE_ALL_BTN_LABEL = "Alle einklappen"
+    _EXPAND_ALL_BTN_LABEL   = "Alle aufklappen"
     # Items mit dieser Zeichenfolge im Namen (Tagesübersicht-Items mit
     # KML-Platzhalter, feste Zeit 23:59:59 – siehe stac_api._KML_DAILY_SUFFIX)
     # haben planmässig nie ein Thumbnail und sind im "ITEMs ohne Thumbnail"-
@@ -374,6 +379,16 @@ class StacMonitorApp(tk.Tk):
         super().__init__()
         self.title("STAC Monitor  —  ch.swisstopo.spezialbefliegungen")
         self.minsize(1040, 720)
+        # Standardgrösse bewusst höher als minsize: die Item/Asset-Liste (Kernstück
+        # der App) soll ohne manuelles Vergrössern schon genug Zeilen zeigen. Breite
+        # bleibt knapp, damit rechts weiterhin Platz für das angedockte Viewer-Fenster
+        # bleibt (siehe _reposition_viewer_window).
+        try:
+            screen_h = self.winfo_screenheight()
+            win_h = max(760, min(screen_h - 80, 1000))
+            self.geometry(f"1040x{win_h}")
+        except tk.TclError:
+            pass
 
         self._dark: bool = True
         self._auth: Optional[Tuple] = None
@@ -382,6 +397,10 @@ class StacMonitorApp(tk.Tk):
         self._all_items: List[Dict] = []
         self._visible_items: List[Dict] = []
         self._items_loaded_once: bool = False
+        # Items werden beim (Neu-)Aufbau des Baums immer aufgeklappt eingefügt
+        # (siehe _populate_tree) – der Toggle-Button startet daher synchron
+        # dazu im Zustand "expanded".
+        self._all_expanded: bool = True
 
         # Baum-Metadaten: tree_iid → dict mit kind/item_id/asset_key/href/item
         self._nodes: Dict[str, Dict] = {}
@@ -446,6 +465,14 @@ class StacMonitorApp(tk.Tk):
         )
         self._theme_btn.pack(side="right", padx=12)
 
+        # Log-Frame VOR dem Notebook packen (side="bottom"): so reserviert das
+        # Pack-Layout dessen feste Höhe zuerst, statt dass das Notebook
+        # (expand=True) bei fixer Fensterhöhe den gesamten Rest beansprucht
+        # und den Log-Bereich verdrängt.
+        log_parent = ttk.Frame(self)
+        log_parent.pack(side="bottom", fill="x", padx=12, pady=(0, 8))
+        self._build_log(log_parent)
+
         self._nb = ttk.Notebook(self)
         self._nb.pack(fill="both", expand=True, padx=12, pady=(8, 4))
 
@@ -453,24 +480,42 @@ class StacMonitorApp(tk.Tk):
         self._nb.add(stac_tab, text="STAC")
         self._build_credentials(stac_tab)
         self._build_filters(stac_tab)
-        self._build_actions(stac_tab)
+        # STAC-Funktionen + Stats-Zeile unterhalb der Liste, aber (wie der
+        # Log-Frame oben) VOR der expandierenden Liste gepackt (side="bottom"):
+        # so reservieren sie zuerst ihre feste Höhe von unten, statt dass die
+        # Liste (expand=True) bei fixer Fensterhöhe den gesamten Rest
+        # beansprucht und sie verdrängt. Pack-Reihenfolge unter mehreren
+        # side="bottom"-Widgets bestimmt die visuelle Reihenfolge von unten
+        # nach oben – zuerst gepackt landet ganz unten.
         self._build_stac_functions(stac_tab)
-        self._build_tree(stac_tab)
         self._build_stats(stac_tab)
+        self._build_tree(stac_tab)
 
         gdwh_tab = ttk.Frame(self._nb)
         self._nb.add(gdwh_tab, text="GDWH")
         self._build_gdwh_tab(gdwh_tab)
 
-        log_parent = ttk.Frame(self)
-        log_parent.pack(fill="x", padx=12, pady=(0, 8))
-        self._build_log(log_parent)
+    def _optional_label(self, parent, text):
+        """Label mit einem '[...]'-Zusatz (z.B. '[optional]') kursiv und
+        etwas kleiner als der Haupttext – ttk.Label kann keinen gemischten
+        Font in einem Widget darstellen, daher zwei Labels in einem Frame."""
+        base, _, bracket = text.partition("[")
+        frame = ttk.Frame(parent)
+        ttk.Label(frame, text=base).pack(side="left")
+        if bracket:
+            ttk.Label(frame, text="[" + bracket,
+                      font=("Segoe UI", 8, "italic")).pack(side="left")
+        return frame
 
     def _build_credentials(self, parent):
         sec = ttk.LabelFrame(parent, text="1   Umgebung & Credentials",
                              padding=8, style="Section.TLabelframe")
         sec.pack(fill="x", pady=(0, 4))
 
+        # Eine einzige Zeile statt zwei: die URL muss nicht separat ausge-
+        # schrieben stehen (der "STAC Browser öffnen"-Button verlinkt ohnehin
+        # dorthin) – der frei gewordene Platz nimmt stattdessen direkt den
+        # "Credentials laden"-Button samt Status auf.
         row1 = ttk.Frame(sec)
         row1.pack(side="top", anchor="w")
 
@@ -480,23 +525,16 @@ class StacMonitorApp(tk.Tk):
             ttk.Radiobutton(row1, text=env, variable=self._env_var, value=env,
                             command=self._on_env_change).pack(side="left", padx=4)
 
-        self._url_lbl = ttk.Label(row1, text=ENVIRONMENTS["INT"],
-                                   font=("Segoe UI", 8), style="Dim.TLabel")
-        self._url_lbl.pack(side="left", padx=12)
+        self._cred_btn = ttk.Button(row1, text="Credentials laden",
+                                     command=self._load_credentials, style="Amber.TButton")
+        self._cred_btn.pack(side="left", padx=(12, 6))
+
+        self._cred_lbl = ttk.Label(row1, text="nicht geladen",
+                                    font=("Segoe UI", 9, "italic"), style="Dim.TLabel")
+        self._cred_lbl.pack(side="left", padx=(0, 16))
 
         ttk.Button(row1, text="STAC Browser öffnen",
                    command=self._open_stac_browser).pack(side="left")
-
-        row2 = ttk.Frame(sec)
-        row2.pack(side="top", anchor="w", pady=(6, 0))
-
-        self._cred_btn = ttk.Button(row2, text="Credentials laden",
-                                     command=self._load_credentials, style="Amber.TButton")
-        self._cred_btn.pack(side="left", padx=(0, 6))
-
-        self._cred_lbl = ttk.Label(row2, text="nicht geladen",
-                                    font=("Segoe UI", 9, "italic"), style="Dim.TLabel")
-        self._cred_lbl.pack(side="left")
 
     def _build_filters(self, parent):
         sec = ttk.LabelFrame(parent, text="2   Filter",
@@ -514,63 +552,83 @@ class StacMonitorApp(tk.Tk):
                 row=0, column=col, sticky="w", padx=(0, 12))
             col += 1
 
-        # Jahr + Suche
-        ttk.Label(sec, text="Jahr [optional]:").grid(row=1, column=0, sticky="w", pady=(6, 0))
+        # Jahr + Area
+        self._optional_label(sec, "Jahr [optional]:").grid(
+            row=1, column=0, sticky="w", pady=(6, 0))
         self._year_var = tk.StringVar()
         self._year_var.trace_add("write", lambda *_: self._apply_filters())
         ttk.Entry(sec, textvariable=self._year_var, width=8).grid(
             row=1, column=1, sticky="w", pady=(6, 0))
 
-        ttk.Label(sec, text="Item-ID / Suche [optional]:").grid(
+        self._optional_label(sec, "Area [optional]:").grid(
             row=1, column=2, sticky="w", padx=(16, 6), pady=(6, 0))
+        self._area_var = tk.StringVar()
+        self._area_var.trace_add("write", lambda *_: self._apply_filters())
+        ttk.Entry(sec, textvariable=self._area_var, width=20).grid(
+            row=1, column=3, sticky="w", pady=(6, 0))
+
+        # Item-ID / Suche (eigene Zeile)
+        self._optional_label(sec, "Item-ID / Suche [optional]:").grid(
+            row=2, column=0, sticky="w", pady=(6, 0))
         self._search_var = tk.StringVar()
         self._search_var.trace_add("write", lambda *_: self._apply_filters())
         ttk.Entry(sec, textvariable=self._search_var, width=34).grid(
-            row=1, column=3, sticky="w", pady=(6, 0))
+            row=2, column=1, columnspan=2, sticky="w", pady=(6, 0))
         ttk.Label(sec, text="Teilstring genügt  (für direkten Abruf: vollständige ID)",
                   font=("Segoe UI", 8), style="Dim.TLabel").grid(
-            row=1, column=4, sticky="w", padx=(8, 0), pady=(6, 0))
+            row=2, column=3, sticky="w", padx=(8, 0), pady=(6, 0))
 
         # Suchfeld gleich mit dem Default-Auftragstyp vorbefüllen (Radiobutton-Command
         # feuert sonst erst bei einem tatsächlichen Klick, nicht bei der Vorauswahl).
         self._on_auftragstyp_change()
 
         # Dateiendung
-        ttk.Label(sec, text="Dateiendung:").grid(row=2, column=0, sticky="w", pady=(6, 0))
+        ttk.Label(sec, text="Dateiendung:").grid(row=3, column=0, sticky="w", pady=(6, 0))
         ext_frame = ttk.Frame(sec)
-        ext_frame.grid(row=2, column=1, columnspan=4, sticky="w", pady=(6, 0))
+        ext_frame.grid(row=3, column=1, columnspan=4, sticky="w", pady=(6, 0))
         self._ext_vars: List[Tuple[tk.BooleanVar, List[str]]] = []
         for label, exts in EXT_PRESETS:
             var = tk.BooleanVar(value=False)
             var.trace_add("write", lambda *_: self._apply_filters())
             self._ext_vars.append((var, exts))
             ttk.Checkbutton(ext_frame, text=label, variable=var).pack(side="left", padx=(0, 10))
-        ttk.Label(ext_frame, text="Freitext im Dateinamen [optional]:").pack(side="left", padx=(6, 4))
+        self._optional_label(ext_frame, "Freitext im Dateinamen [optional]:").pack(
+            side="left", padx=(6, 4))
         self._ext_custom_var = tk.StringVar()
         self._ext_custom_var.trace_add("write", lambda *_: self._apply_filters())
         ttk.Entry(ext_frame, textvariable=self._ext_custom_var, width=14).pack(side="left")
 
-    def _build_actions(self, parent):
-        row = ttk.Frame(parent)
-        row.pack(fill="x", pady=(0, 4))
-
-        self._load_btn = ttk.Button(
-            row, text=self._LOAD_BTN_LABEL, command=self._load, state="disabled",
-            style="AmberBold.TButton")
-        self._load_btn.pack(side="left", padx=(0, 16))
-
     def _build_stac_functions(self, parent):
+        # Kompaktes 2-zeiliges Toolbar-Layout statt einer eigenen Zeile pro
+        # Funktionsgruppe: gibt der Item/Asset-Liste darunter deutlich mehr
+        # vertikalen Platz. Gruppen bleiben durch eine kleine, dezente
+        # Beschriftung + Trennlinie erkennbar.
         sec = ttk.LabelFrame(parent, text="STAC-Funktionen",
-                             padding=8, style="Section.TLabelframe")
-        sec.pack(fill="x", pady=(0, 4))
+                             padding=(8, 4), style="Section.TLabelframe")
+        sec.pack(side="bottom", fill="x", pady=(4, 0))
 
-        _hdr_font = ("Segoe UI", 8, "bold")
+        _hdr_font = ("Segoe UI", 7, "bold")
 
-        ttk.Label(sec, text="Quality Check", font=_hdr_font,
-                  style="Dim.TLabel").pack(side="top", anchor="w")
+        bar_top = ttk.Frame(sec)
+        bar_top.pack(side="top", anchor="w", fill="x")
+        bar_bottom = ttk.Frame(sec)
+        bar_bottom.pack(side="top", anchor="w", fill="x", pady=(6, 0))
 
-        row1 = ttk.Frame(sec)
-        row1.pack(side="top", anchor="w", pady=(2, 0))
+        def _group(bar, caption):
+            grp = ttk.Frame(bar)
+            grp.pack(side="left", anchor="n", padx=(0, 10))
+            ttk.Label(grp, text=caption, font=_hdr_font,
+                      style="Dim.TLabel").pack(side="top", anchor="w")
+            row = ttk.Frame(grp)
+            row.pack(side="top", anchor="w", pady=(1, 0))
+            return row
+
+        def _sep(bar):
+            ttk.Separator(bar, orient="vertical").pack(
+                side="left", fill="y", padx=(0, 10))
+
+        # ── Zeile 1: Quality Check | Export ─────────────────────────────────
+        row1 = _group(bar_top, "Quality Check")
 
         self._check_btn = ttk.Button(
             row1, text="Assets prüfen  (HEAD)", command=self._check_assets,
@@ -580,7 +638,7 @@ class StacMonitorApp(tk.Tk):
         self._show_faulty_btn = ttk.Button(
             row1, text=self._SHOW_FAULTY_BTN_LABEL,
             command=self._toggle_faulty_filter, state="disabled")
-        self._show_faulty_btn.pack(side="left", padx=(8, 0))
+        self._show_faulty_btn.pack(side="left", padx=(4, 0))
         # Text-Sync mit self._error_filter_var (existiert erst nach
         # _build_tree()) wird dort verdrahtet, siehe _build_tree().
 
@@ -592,11 +650,8 @@ class StacMonitorApp(tk.Tk):
             command=self._toggle_no_thumb_filter, state="disabled")
         self._update_no_thumb_btn_visibility()
 
-        ttk.Label(sec, text="Export", font=_hdr_font,
-                  style="Dim.TLabel").pack(side="top", anchor="w", pady=(8, 0))
-
-        row2 = ttk.Frame(sec)
-        row2.pack(side="top", anchor="w", pady=(2, 0))
+        _sep(bar_top)
+        row2 = _group(bar_top, "Export")
 
         self._export_json_btn = ttk.Button(
             row2, text="Export JSON",
@@ -610,13 +665,10 @@ class StacMonitorApp(tk.Tk):
         self._export_links_btn = ttk.Button(
             row2, text="Export STAC Browser Links",
             command=self._export_stac_browser_links, state="disabled")
-        self._export_links_btn.pack(side="left", padx=(0, 4))
+        self._export_links_btn.pack(side="left")
 
-        ttk.Label(sec, text="Download", font=_hdr_font,
-                  style="Dim.TLabel").pack(side="top", anchor="w", pady=(8, 0))
-
-        row_dl = ttk.Frame(sec)
-        row_dl.pack(side="top", anchor="w", pady=(2, 0))
+        # ── Zeile 2: Download | ASSET Viewer ────────────────────────────────
+        row_dl = _group(bar_bottom, "Download")
 
         self._download_btn = ttk.Button(
             row_dl, text="Download ausgewählte ITEMs/ASSETs",
@@ -626,13 +678,10 @@ class StacMonitorApp(tk.Tk):
         self._create_links_btn = ttk.Button(
             row_dl, text="create Download-Links",
             command=self._create_download_links, state="disabled")
-        self._create_links_btn.pack(side="left", padx=(0, 4))
+        self._create_links_btn.pack(side="left")
 
-        ttk.Label(sec, text="ASSET Viewer", font=_hdr_font,
-                  style="Dim.TLabel").pack(side="top", anchor="w", pady=(8, 0))
-
-        row3 = ttk.Frame(sec)
-        row3.pack(side="top", anchor="w", pady=(2, 0))
+        _sep(bar_bottom)
+        row3 = _group(bar_bottom, "ASSET Viewer")
 
         self._map_viewer_btn = ttk.Button(
             row3, text="Link auf Kartenviewer",
@@ -654,47 +703,41 @@ class StacMonitorApp(tk.Tk):
         toolbar = ttk.Frame(frame)
         toolbar.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 4))
 
-        select_row = ttk.Frame(toolbar)
-        select_row.pack(side="top", anchor="w")
+        # "ITEM-Liste laden" steht direkt links neben den Auswahl-/Klapp-
+        # Toggle-Buttons über der Liste statt in einer eigenen Zeile darüber
+        # – spart eine ganze Zeile Höhe zugunsten des Listenfensters.
+        #
+        # "Alle auswählen"/"Alles abwählen" und "Alle aufklappen"/"Alle
+        # einklappen" sind je ein einzelner Toggle-Button (Text + Amber-Stil
+        # wechseln je nach aktuellem Zustand) statt zwei Buttons pro Aktion –
+        # spart zusätzlich Platz.
+        toggle_row = ttk.Frame(toolbar)
+        toggle_row.pack(side="top", anchor="w")
 
-        _btn_w = 16
+        self._load_btn = ttk.Button(
+            toggle_row, text=self._LOAD_BTN_LABEL, command=self._load, state="disabled",
+            style="AmberBold.TButton")
+        self._load_btn.pack(side="left", padx=(0, 16))
 
-        self._select_all_btn = ttk.Button(
-            select_row, text="Alle auswählen", command=self._select_all,
-            state="disabled", width=_btn_w)
-        self._select_all_btn.pack(side="left", padx=(0, 4))
+        _btn_w = 18
 
-        self._deselect_all_btn = ttk.Button(
-            select_row, text="Alles abwählen", command=self._deselect_all,
-            state="disabled", width=_btn_w)
-        self._deselect_all_btn.pack(side="left")
+        self._select_toggle_btn = ttk.Button(
+            toggle_row, text=self._SELECT_ALL_BTN_LABEL,
+            command=self._toggle_select_all, state="disabled", width=_btn_w)
+        self._select_toggle_btn.pack(side="left", padx=(0, 4))
 
-        expand_row = ttk.Frame(toolbar)
-        expand_row.pack(side="top", anchor="w", pady=(4, 0))
+        self._expand_toggle_btn = ttk.Button(
+            toggle_row, text=self._COLLAPSE_ALL_BTN_LABEL,
+            command=self._toggle_expand_all, state="disabled", width=_btn_w)
+        self._expand_toggle_btn.pack(side="left")
 
-        self._expand_btn = ttk.Button(
-            expand_row, text="Alle aufklappen", command=self._expand_all,
-            state="disabled", width=_btn_w)
-        self._expand_btn.pack(side="left", padx=(0, 4))
-
-        self._collapse_btn = ttk.Button(
-            expand_row, text="Alle einklappen", command=self._collapse_all,
-            state="disabled", width=_btn_w)
-        self._collapse_btn.pack(side="left")
-
-        error_row = ttk.Frame(toolbar)
-        error_row.pack(side="top", anchor="w", pady=(4, 0))
-
+        # Eigene Checkbox "Assets mit ERRORs anzeigen" entfernt – redundant
+        # zum Button "Fehlerhafte anzeigen" (STAC-Funktionen), der dieselbe
+        # Variable steuert.
         self._error_filter_var = tk.BooleanVar(value=False)
-        self._error_filter_btn = ttk.Checkbutton(
-            error_row, text="Assets mit ERRORs anzeigen",
-            variable=self._error_filter_var, command=self._on_error_filter_toggle,
-            state="disabled")
-        self._error_filter_btn.pack(side="left")
-        # Hält Text und Stil von self._show_faulty_btn (oben bei "Assets prüfen")
-        # synchron, egal ob der Zustand über diesen Button oder über diese
-        # Checkbox geändert wird – beide steuern dieselbe Variable. Amber-Stil
-        # signalisiert, dass eine gefilterte Ansicht aktiv ist.
+        # Hält Text und Stil von self._show_faulty_btn (STAC-Funktionen,
+        # "Assets prüfen") synchron mit dem Filterzustand. Amber-Stil
+        # signalisiert, dass die gefilterte Ansicht aktiv ist.
         self._error_filter_var.trace_add("write", lambda *_: self._show_faulty_btn.config(
             text=self._SHOW_ALL_BTN_LABEL if self._error_filter_var.get()
                  else self._SHOW_FAULTY_BTN_LABEL,
@@ -725,20 +768,48 @@ class StacMonitorApp(tk.Tk):
 
     def _build_stats(self, parent):
         self._stats_outer = tk.Frame(parent)
-        self._stats_outer.pack(fill="x", pady=(0, 2))
+        self._stats_outer.pack(side="bottom", fill="x", pady=(0, 2))
         self._stats_lbl = tk.Label(
             self._stats_outer, text="Keine Daten geladen.",
             font=("Segoe UI", 9), anchor="w")
         self._stats_lbl.pack(side="left", padx=4)
 
     def _build_log(self, parent):
+        # Log ist standardmässig eingeklappt (zeigt nur die letzte Meldung) –
+        # der Inhalt ist meist nur "verbunden" / "N Assets geladen" und
+        # braucht nicht dauerhaft Platz. Bei Bedarf per Klick aufklappbar.
         frm = ttk.LabelFrame(parent, text="Log",
                               padding=4, style="Section.TLabelframe")
         frm.pack(fill="x")
+
+        header = ttk.Frame(frm)
+        header.pack(fill="x")
+
+        self._log_expanded = False
+        self._log_toggle_btn = ttk.Button(
+            header, text="▸ Details einblenden", width=22,
+            command=self._toggle_log)
+        self._log_toggle_btn.pack(side="left")
+
+        self._log_preview_lbl = ttk.Label(
+            header, text="Bereit.", style="Dim.TLabel",
+            font=("Segoe UI", 8, "italic"))
+        self._log_preview_lbl.pack(side="left", padx=(10, 0))
+
+        self._log_body = ttk.Frame(frm)
         self._log = scrolledtext.ScrolledText(
-            frm, height=5, state="disabled",
+            self._log_body, height=6, state="disabled",
             font=("Cascadia Mono", 8), wrap="word")
         self._log.pack(fill="both")
+
+    def _toggle_log(self):
+        self._log_expanded = not self._log_expanded
+        if self._log_expanded:
+            self._log_body.pack(fill="both", pady=(4, 0))
+            self._log_toggle_btn.config(text="▾ Details ausblenden")
+        else:
+            self._log_body.pack_forget()
+            self._log_toggle_btn.config(text="▸ Details einblenden")
 
     # ── GDWH-Tab (read-only) ─────────────────────────────────────────────────
 
@@ -791,7 +862,8 @@ class StacMonitorApp(tk.Tk):
         )
         gdwh_gds_combo.grid(row=0, column=1, sticky="w", padx=(0, 16))
 
-        ttk.Label(sec2, text="Jahr [optional]:").grid(row=0, column=2, sticky="w", padx=(0, 6))
+        self._optional_label(sec2, "Jahr [optional]:").grid(
+            row=0, column=2, sticky="w", padx=(0, 6))
         self._gdwh_year_var = tk.StringVar()
         self._gdwh_year_var.trace_add("write", lambda *_: self._gdwh_apply_filter())
         ttk.Entry(sec2, textvariable=self._gdwh_year_var, width=8).grid(
@@ -825,7 +897,7 @@ class StacMonitorApp(tk.Tk):
             values=self._GDWH_AUFTRAGSTYP_OPTIONS, state="readonly", width=10,
         ).grid(row=1, column=3, sticky="w", pady=(6, 0))
 
-        ttk.Label(sec2, text="Area [optional]:").grid(
+        self._optional_label(sec2, "Area [optional]:").grid(
             row=1, column=4, sticky="w", padx=(16, 6), pady=(6, 0))
         self._gdwh_area_var = tk.StringVar()
         self._gdwh_area_var.trace_add("write", lambda *_: self._gdwh_apply_filter())
@@ -1253,7 +1325,6 @@ class StacMonitorApp(tk.Tk):
     # ── Event Handler ─────────────────────────────────────────────────────────
 
     def _on_env_change(self):
-        self._url_lbl.configure(text=ENVIRONMENTS[self._env_var.get()])
         self._auth = None
         self._cred_lbl.configure(text="nicht geladen")
         self._cred_btn.configure(style="Amber.TButton")
@@ -1478,13 +1549,12 @@ class StacMonitorApp(tk.Tk):
         # verwerfen, damit keine inzwischen unsichtbaren Assets exportiert/
         # geprüft werden.
         self._checked.clear()
-        self._refresh_deselect_btn_style()
+        self._refresh_select_toggle_btn()
         self._apply_filters()
 
     def _toggle_faulty_filter(self):
-        """Button-Pendant zur Checkbox 'Assets mit ERRORs anzeigen' (gleiche
-        Variable self._error_filter_var, Text-Sync per trace_add in
-        _build_tree()) – für die Positionierung direkt neben 'Assets prüfen'."""
+        """Schaltet den Fehler-Filter um (self._error_filter_var, Text-/Stil-
+        Sync von self._show_faulty_btn per trace_add in _build_tree())."""
         self._error_filter_var.set(not self._error_filter_var.get())
         self._on_error_filter_toggle()
 
@@ -1508,7 +1578,7 @@ class StacMonitorApp(tk.Tk):
                  else self._SHOW_NO_THUMB_BTN_LABEL,
             style="Amber.TButton" if self._show_no_thumb_only else "TButton")
         self._checked.clear()
-        self._refresh_deselect_btn_style()
+        self._refresh_select_toggle_btn()
         self._apply_filters()
 
     def _apply_filters(self):
@@ -1516,6 +1586,7 @@ class StacMonitorApp(tk.Tk):
             return
         self._items_loaded_once = True
         year        = self._year_var.get().strip()
+        area        = self._area_var.get().strip()
         search      = self._search_var.get().strip()
         exts        = self._active_extensions()
         terms       = self._active_terms()
@@ -1526,6 +1597,8 @@ class StacMonitorApp(tk.Tk):
             items = filter_items(items, search)
         if year:
             items = [it for it in items if stac_item_year(it) == year]
+        if area:
+            items = [it for it in items if area.lower() in stac_item_area(it).lower()]
         if exts or terms or errors_only:
             def _has_match(it):
                 iid = it["id"]
@@ -1619,6 +1692,10 @@ class StacMonitorApp(tk.Tk):
         self._stats_lbl.configure(
             text=f"{n} Item(s)  |  {total_assets} Asset(s)  "
                  f"(Gesamtcollection: {len(self._all_items)} Items)")
+        # _populate_tree fügt Items immer aufgeklappt ein (open=True oben) –
+        # Toggle-Button-Zustand nach jedem (Neu-)Aufbau daran angleichen.
+        self._all_expanded = True
+        self._refresh_expand_toggle_btn()
         self._toggle_tree_buttons(True)
 
     def _toggle_tree_buttons(self, on: bool):
@@ -1631,18 +1708,14 @@ class StacMonitorApp(tk.Tk):
         self._create_links_btn.config(state=state)
         self._map_viewer_btn.config(state=state)
         self._viewer_win_btn.config(state=state)
-        self._expand_btn.config(state=state)
-        self._collapse_btn.config(state=state)
-        self._select_all_btn.config(state=state)
-        self._deselect_all_btn.config(state=state)
+        self._expand_toggle_btn.config(state=state)
+        self._select_toggle_btn.config(state=state)
         # Unabhängig von der aktuellen Filter-Trefferzahl klickbar halten,
         # sonst könnten sich diese Toggle-Buttons selbst aussperren, falls der
         # gefilterte Blick (z.B. "Fehlerhafte anzeigen") gerade leer ist –
         # ein erneuter Klick müsste dann trotzdem wieder alle Assets zeigen
         # können.
         has_data = bool(self._all_items)
-        self._error_filter_btn.config(
-            state="normal" if (has_data and self._assets_checked_once) else "disabled")
         self._show_faulty_btn.config(
             state="normal" if (has_data and self._assets_checked_once) else "disabled")
         # "ITEMs ohne Thumbnail" ist reine Metadaten-Prüfung – anders als der
@@ -1656,6 +1729,22 @@ class StacMonitorApp(tk.Tk):
     def _collapse_all(self):
         for node in self._tree.get_children():
             self._tree.item(node, open=False)
+
+    def _toggle_expand_all(self):
+        """Toggle-Button: Text zeigt stets die Aktion, die ein Klick auslöst
+        ('Alle einklappen' solange aufgeklappt, danach 'Alle aufklappen')."""
+        if self._all_expanded:
+            self._collapse_all()
+        else:
+            self._expand_all()
+        self._all_expanded = not self._all_expanded
+        self._refresh_expand_toggle_btn()
+
+    def _refresh_expand_toggle_btn(self):
+        self._expand_toggle_btn.config(
+            text=self._COLLAPSE_ALL_BTN_LABEL if self._all_expanded
+                 else self._EXPAND_ALL_BTN_LABEL,
+            style="TButton" if self._all_expanded else "Amber.TButton")
 
     # ── Export-Auswahl (Checkboxen) ───────────────────────────────────────────
 
@@ -1699,12 +1788,15 @@ class StacMonitorApp(tk.Tk):
         sonst die bisherige Item-Kennfarbe."""
         return "item_selected" if all_checked else "item"
 
-    def _refresh_deselect_btn_style(self):
-        """Färbt den Button 'Alles abwählen' amber, sobald mindestens ein
-        Asset (bzw. Item, da dessen Auswahl über seine Assets läuft)
-        ausgewählt ist – sonst neutrale Standardfarbe."""
+    def _refresh_select_toggle_btn(self):
+        """Text + Farbe des kombinierten Auswahl-Toggle-Buttons: 'Alles
+        abwählen' + amber, sobald mindestens ein Asset (bzw. Item, da dessen
+        Auswahl über seine Assets läuft) ausgewählt ist – sonst 'Alles
+        auswählen' in neutraler Standardfarbe."""
         any_checked = any(self._checked.values())
-        self._deselect_all_btn.config(
+        self._select_toggle_btn.config(
+            text=self._DESELECT_ALL_BTN_LABEL if any_checked
+                 else self._SELECT_ALL_BTN_LABEL,
             style="Amber.TButton" if any_checked else "TButton")
 
     def _refresh_item_glyph(self, item_id: str):
@@ -1744,16 +1836,29 @@ class StacMonitorApp(tk.Tk):
                 row_tag = self._asset_tag(new_state, self._asset_status_tag(nid))
                 self._tree.item(nid, values=vals, tags=(row_tag,))
             self._refresh_item_glyph(d["item_id"])
-        self._refresh_deselect_btn_style()
+        self._refresh_select_toggle_btn()
         return "break"
+
+    def _toggle_select_all(self):
+        """Toggle-Button: solange irgendetwas ausgewählt ist, wählt ein Klick
+        alles ab; sonst wählt er alles aus (Text/Farbe siehe
+        _refresh_select_toggle_btn)."""
+        if any(self._checked.values()):
+            self._deselect_all()
+        else:
+            self._select_all()
 
     def _select_all(self):
         self._run_blocking_with_spinner(
-            self._select_all_btn, "Wähle aus …", lambda: self._set_all_checked(True))
+            self._select_toggle_btn, "Wähle aus …", lambda: self._set_all_checked(True))
+        # Erst NACH dem Spinner aktualisieren: _run_blocking_with_spinner
+        # stellt sonst wieder den Button-Text von vor dem Klick her.
+        self._refresh_select_toggle_btn()
 
     def _deselect_all(self):
         self._run_blocking_with_spinner(
-            self._deselect_all_btn, "Wähle ab …", lambda: self._set_all_checked(False))
+            self._select_toggle_btn, "Wähle ab …", lambda: self._set_all_checked(False))
+        self._refresh_select_toggle_btn()
 
     def _set_all_checked(self, state: bool):
         for nid, d in self._nodes.items():
@@ -1768,7 +1873,6 @@ class StacMonitorApp(tk.Tk):
         for nid, d in self._nodes.items():
             if d["kind"] == "item":
                 self._refresh_item_glyph(d["item_id"])
-        self._refresh_deselect_btn_style()
 
     # ── HEAD-Prüfung ──────────────────────────────────────────────────────────
 
@@ -1887,7 +1991,6 @@ class StacMonitorApp(tk.Tk):
 
     def _enable_error_filter_btn(self):
         self._assets_checked_once = True
-        self._error_filter_btn.config(state="normal")
         self._show_faulty_btn.config(state="normal")
 
     def _refresh_stats(self, ok: int, err: int, total_bytes: int):
@@ -2560,6 +2663,11 @@ class StacMonitorApp(tk.Tk):
             self._log.insert("end", text)
             self._log.see("end")
             self._log.config(state="disabled")
+            # Letzte nichtleere Zeile auch eingeklappt sichtbar machen – das ist
+            # der Teil des Logs, den man im Alltag tatsächlich braucht.
+            lines = [ln for ln in text.strip().splitlines() if ln.strip()]
+            if lines:
+                self._log_preview_lbl.config(text=lines[-1])
         self.after(0, _do)
 
 

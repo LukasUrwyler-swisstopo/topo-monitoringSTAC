@@ -192,16 +192,13 @@ def _bbox_to_center_zoom(bbox: Optional[List[float]], canvas_w: int, canvas_h: i
     cx, cy = (x_min + x_max) / 2, (y_min + y_max) / 2
     if not _is_lv95_coord(cx, cy):
         return ""
-    width_m    = max(abs(x_max - x_min), 50.0)
-    height_m   = max(abs(y_max - y_min), 50.0)
-    # Faktor 2.0 (statt einer knappen Bbox-Passform): deckt sowohl
-    # den gewünschten Rand um das Asset als auch die anfangs (vor dem
-    # Entfernen der Titelleiste) kleinere Browser-Fensterfläche ab.
-    resolution = max(width_m * 2.0 / max(canvas_w, 1),
-                      height_m * 2.0 / max(canvas_h, 1))
-    # 0.3 Stufen zusätzlich rauszoomen als Sicherheitsmarge gegen
-    # Rundungseffekte des Viewers beim fraktionalen Zoom-Level.
-    z = max(0.0, _resolution_to_zoom(resolution) - 0.3)
+    # Die bbox-basierte Zoomberechnung über _VIEWER_RESOLUTIONS/_resolution_to_zoom
+    # ergab in der Praxis viel zu nahe Zoomstufen (z.B. z=13 statt einer sinnvollen
+    # Übersicht) – der "z"-Parameter von map.geo.admin.ch folgt offenbar nicht der
+    # dort angenommenen Auflösungstabelle. Bis das genau geklärt ist, fest auf
+    # z=5 (in der Praxis für die üblichen Asset-Grössen dieser Collection ein
+    # sinnvoller, deutlich herausgezoomter Ausschnitt).
+    z = 5.0
     return f"center={cx:.2f},{cy:.2f}&z={z:.2f}&"
 
 
