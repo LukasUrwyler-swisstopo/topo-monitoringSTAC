@@ -16,7 +16,8 @@ Read-only-GUI.
    ```bash
    python pfad/0_GUI_gdwh_stac_monitor.py
    ```
-<img width="993" height="778" alt="image" src="https://github.com/user-attachments/assets/ad3b97c8-11b8-45bd-9cb6-4d6a0f3754cf" />
+<img width="959" height="730" alt="image" src="https://github.com/user-attachments/assets/1084f67c-6369-4ae7-80c4-af4de32eec99" />
+
 
 ### Tab STAC
 
