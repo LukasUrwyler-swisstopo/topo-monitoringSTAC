@@ -5,8 +5,6 @@ Zeigt Items und Assets der Collection "ch.swisstopo.spezialbefliegungen"
 in einer Baumansicht. Funktionen:
   - Asset-Status-Prüfung via HEAD (HTTP-Code, Dateigrösse, Last-Modified)
   - Statistik: OK / Fehler / Gesamtgrösse
-  - Export Download-Links (JSON für Kunden)
-  - Export Tabelle (CSV für interne Auswertung)
   - Item-JSON Detailansicht (Doppelklick oder Rechtsklick)
   - URL in Zwischenablage kopieren, im Browser öffnen
 
@@ -14,10 +12,8 @@ Credentials: secrets/stac_credentials.json
 Format:      {"INT": {"username": "...", "password": "..."}, "PROD": {...}}
 """
 
-import csv
 import ctypes
 import importlib
-import io
 import json
 import os
 import re
@@ -45,7 +41,7 @@ from stac_api import (
     get_item_direct, get_collection_items, filter_items,
     check_asset_info, download_asset, browser_url, asset_area,
     stac_item_year, stac_item_area, stac_item_acq_date,
-    build_stac_item, is_cog_asset, is_ebo_ebn_asset, ebo_ebn_kml_item_id,
+    is_cog_asset, is_ebo_ebn_asset, ebo_ebn_kml_item_id,
     is_thumbnail_asset, map_viewer_url, embed_viewer_url, union_bbox,
 )
 from gdwh_api import (
@@ -653,19 +649,15 @@ class StacMonitorApp(tk.Tk):
         _sep(bar_top)
         row2 = _group(bar_top, "Export")
 
-        self._export_json_btn = ttk.Button(
-            row2, text="Export JSON",
-            command=self._export_json, state="disabled")
-        self._export_json_btn.pack(side="left", padx=(0, 4))
-
-        self._export_csv_btn = ttk.Button(
-            row2, text="Export CSV", command=self._export_csv, state="disabled")
-        self._export_csv_btn.pack(side="left", padx=(0, 4))
-
         self._export_links_btn = ttk.Button(
             row2, text="Export STAC Browser Links",
             command=self._export_stac_browser_links, state="disabled")
-        self._export_links_btn.pack(side="left")
+        self._export_links_btn.pack(side="left", padx=(0, 4))
+
+        self._create_links_btn = ttk.Button(
+            row2, text="create Download-Links",
+            command=self._create_download_links, state="disabled")
+        self._create_links_btn.pack(side="left")
 
         # ── Zeile 2: Download | ASSET Viewer ────────────────────────────────
         row_dl = _group(bar_bottom, "Download")
@@ -673,12 +665,7 @@ class StacMonitorApp(tk.Tk):
         self._download_btn = ttk.Button(
             row_dl, text="Download ausgewählte ITEMs/ASSETs",
             command=self._download_assets, state="disabled")
-        self._download_btn.pack(side="left", padx=(0, 4))
-
-        self._create_links_btn = ttk.Button(
-            row_dl, text="create Download-Links",
-            command=self._create_download_links, state="disabled")
-        self._create_links_btn.pack(side="left")
+        self._download_btn.pack(side="left")
 
         _sep(bar_bottom)
         row3 = _group(bar_bottom, "ASSET Viewer")
@@ -1442,8 +1429,6 @@ class StacMonitorApp(tk.Tk):
         self._load_btn.config(state=state if self._auth else "disabled")
         if busy:
             self._check_btn.config(state="disabled")
-            self._export_json_btn.config(state="disabled")
-            self._export_csv_btn.config(state="disabled")
             self._export_links_btn.config(state="disabled")
             self._download_btn.config(state="disabled")
             self._create_links_btn.config(state="disabled")
@@ -1701,8 +1686,6 @@ class StacMonitorApp(tk.Tk):
     def _toggle_tree_buttons(self, on: bool):
         state = "normal" if on else "disabled"
         self._check_btn.config(state=state)
-        self._export_json_btn.config(state=state)
-        self._export_csv_btn.config(state=state)
         self._export_links_btn.config(state=state)
         self._download_btn.config(state=state)
         self._create_links_btn.config(state=state)
@@ -2059,111 +2042,6 @@ class StacMonitorApp(tk.Tk):
         self._log_write(f"[Clipboard] {text}\n")
 
     # ── Export ────────────────────────────────────────────────────────────────
-
-    def _export_json(self):
-        if not self._visible_items:
-            messagebox.showwarning("Keine Daten", "Keine Items geladen.")
-            return
-
-        exts       = self._active_extensions()
-        terms      = self._active_terms()
-        items_out  = []
-        asset_count = 0
-        for item in self._visible_items:
-            iid    = item["id"]
-            assets = item.get("assets", {})
-            assets_out: Dict = {}
-            for ak, aval in assets.items():
-                href = aval.get("href", "")
-                if not self._asset_matches(href, ak, exts, terms):
-                    continue
-                if not self._is_checked(f"asset::{iid}::{ak}"):
-                    continue
-                assets_out[ak] = aval
-            if not assets_out:
-                continue
-            items_out.append(build_stac_item(item, assets_out))
-            asset_count += len(assets_out)
-
-        # STAC-ItemCollection: Standardformat für einen Export mehrerer valider
-        # STAC-1.0.0-Items (analog zur Struktur, die auch die STAC-API selbst
-        # bei /items bzw. /search zurückgibt).
-        output = {
-            "type":     "FeatureCollection",
-            "features": items_out,
-        }
-        content = json.dumps(output, indent=2, ensure_ascii=False)
-
-        def _on_saved(path):
-            self._log_write(f"[Export] JSON: {path}\n")
-            messagebox.showinfo("Export erfolgreich",
-                                f"{len(items_out)} Items  |  "
-                                f"{asset_count} Assets\n{path}")
-
-        ExportPreviewDialog(
-            self, self._dark, "Download-Links exportieren (JSON)", content,
-            initialfile=f"stac_links_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-            filetypes=[("JSON", "*.json"), ("Alle Dateien", "*.*")],
-            defaultextension=".json", on_saved=_on_saved,
-        )
-
-    def _export_csv(self):
-        if not self._visible_items:
-            messagebox.showwarning("Keine Daten", "Keine Items geladen.")
-            return
-
-        exts  = self._active_extensions()
-        terms = self._active_terms()
-        rows = []
-        for item in self._visible_items:
-            iid    = item["id"]
-            year   = stac_item_year(item)
-            area   = stac_item_area(item)
-            acq    = stac_item_acq_date(item)
-            assets = item.get("assets", {})
-            for ak, aval in assets.items():
-                href = aval.get("href", "")
-                if not self._asset_matches(href, ak, exts, terms):
-                    continue
-                if not self._is_checked(f"asset::{iid}::{ak}"):
-                    continue
-                info = self._asset_info.get(iid, {}).get(ak, {})
-                rows.append({
-                    "item_id":       iid,
-                    "year":          year,
-                    "area":          area,
-                    "acq_date":      acq,
-                    "asset_key":     ak,
-                    "extension":     Path(href).suffix if href else "",
-                    "media_type":    aval.get("type", ""),
-                    "http_status":   info.get("status", ""),
-                    "size_bytes":    info.get("size_bytes", ""),
-                    "size_human":    _fmt_size(info.get("size_bytes")),
-                    "last_modified": _fmt_date(info.get("last_modified")),
-                    "href":          href,
-                })
-        if not rows:
-            messagebox.showwarning("Keine Daten", "Keine Assets nach Filter.")
-            return
-
-        sio = io.StringIO(newline="")
-        writer = csv.DictWriter(sio, fieldnames=list(rows[0].keys()))
-        writer.writeheader()
-        writer.writerows(rows)
-        content = sio.getvalue()
-
-        def _on_saved(path):
-            self._log_write(f"[Export] CSV: {path}\n")
-            messagebox.showinfo("Export erfolgreich",
-                                f"{len(rows)} Zeilen exportiert.\n{path}")
-
-        ExportPreviewDialog(
-            self, self._dark, "Export CSV", content,
-            initialfile=f"stac_monitor_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-            filetypes=[("CSV", "*.csv"), ("Alle Dateien", "*.*")],
-            defaultextension=".csv", encoding="utf-8-sig",
-            write_newline="", on_saved=_on_saved,
-        )
 
     def _export_stac_browser_links(self):
         if not self._visible_items:
