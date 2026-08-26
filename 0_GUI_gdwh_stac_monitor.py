@@ -2249,6 +2249,8 @@ class StacMonitorApp(tk.Tk):
         for item in self._visible_items:
             iid     = item["id"]
             display = iid[len(_pfx):] if iid.startswith(_pfx) else iid
+            year    = stac_item_year(item)
+            area    = stac_item_area(item)
             assets  = item.get("assets", {})
             asset_entries = []
             for ak, aval in assets.items():
@@ -2261,7 +2263,8 @@ class StacMonitorApp(tk.Tk):
             if not asset_entries:
                 continue
             asset_entries.sort(key=lambda e: e[0])
-            lines = [f"item: {display};", "asset: "]
+            info = " ".join(v for v in (year, area) if v)
+            lines = [f"info: {info}", f"item: {display};", "asset: "]
             for ak, href in asset_entries:
                 lines.append(ak)
                 lines.append(f"- {href}")
