@@ -1,21 +1,25 @@
 """
 test_functions.py  –  Unit-Tests für die reinen Hilfsfunktionen von
-stac_api.py und 0_GUI_gdwh_stac_monitor.py (kein Netzwerk-/GUI-Zugriff).
+api/stac_api.py und GUI_monitoring_stac_gdwh.py (kein Netzwerk-/GUI-Zugriff).
 
-Aufruf:  pytest test_functions.py
+Aufruf:  pytest test/test_functions.py
 """
 
 import importlib.util
+import sys
 from pathlib import Path
 
 import pytest
 
-import gdwh_api as gapi
-import stac_api as api
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
 
-# Modulname beginnt mit einer Ziffer ("0_GUI_..."), daher kein regulärer
-# Import möglich – Laden über importlib anhand des Dateipfads.
-_gui_path = Path(__file__).parent / "0_GUI_gdwh_stac_monitor.py"
+from api import gdwh_api as gapi
+from api import stac_api as api
+
+# Laden über importlib anhand des Dateipfads (liegt ausserhalb des Package-Baums).
+_gui_path = _PROJECT_ROOT / "GUI_monitoring_stac_gdwh.py"
 _spec = importlib.util.spec_from_file_location("gui_stac_monitor", _gui_path)
 gui = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(gui)

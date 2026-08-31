@@ -29,7 +29,7 @@ _FALLBACK_PROXY = "http://proxy-bvcol.admin.ch:8080"
 def _pip_install(pkg: str) -> bool:
     """Installiert ein Paket via pip. Versucht zuerst Proxies aus proxy_config.json,
     dann den Firmen-Fallback-Proxy, zuletzt ohne Proxy. Gibt True bei Erfolg zurück."""
-    config_path = os.path.join(os.path.dirname(__file__), "secrets", "proxy_config.json")
+    config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "secrets", "proxy_config.json")
     proxies = []
     if os.path.exists(config_path):
         try:

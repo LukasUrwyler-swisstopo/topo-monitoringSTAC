@@ -1,5 +1,5 @@
 """
-0_GUI_gdwh_stac_monitor.py  –  STAC Monitoring-Tool (read-only)
+GUI_monitoring_stac_gdwh.py  –  STAC Monitoring-Tool (read-only)
 
 Zeigt Items und Assets der Collection "ch.swisstopo.spezialbefliegungen"
 in einer Baumansicht. Funktionen:
@@ -35,7 +35,7 @@ from urllib.parse import urlparse
 import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext, filedialog
 
-from stac_api import (
+from api.stac_api import (
     COLLECTION_ID, ENVIRONMENTS, AUFTRAGSTYPEN, EXT_PRESETS,
     LARGE_ASSET_THRESHOLD_BYTES,
     get_item_direct, get_collection_items, filter_items,
@@ -44,7 +44,7 @@ from stac_api import (
     is_cog_asset, is_ebo_ebn_asset, ebo_ebn_kml_item_id,
     is_thumbnail_asset, map_viewer_url, embed_viewer_url, union_bbox,
 )
-from gdwh_api import (
+from api.gdwh_api import (
     GDWH_GDS_KEYS, GDWH_ENVIRONMENTS,
     gdwh_get_imports, gdwh_import_id, gdwh_import_date,
     gdwh_search_file_metadata, gdwh_index_file_metadata_by_import,

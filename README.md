@@ -14,7 +14,7 @@ Read-only-GUI.
 2. Tool starten: WIN-Taste + cmd (Terminal starten):
 
    ```bash
-   python pfad/0_GUI_gdwh_stac_monitor.py
+   python pfad/GUI_monitoring_stac_gdwh.py
    ```
 <img width="959" height="730" alt="image" src="https://github.com/user-attachments/assets/1084f67c-6369-4ae7-80c4-af4de32eec99" />
 
@@ -124,8 +124,9 @@ und verbindet sich direkt, ohne Proxy.
 
 | Datei | Zweck |
 |---|---|
-| `0_GUI_gdwh_stac_monitor.py` | GUI-Anwendung (Tkinter) |
-| `stac_api.py` | STAC-API-Hilfsfunktionen (inkl. Download) |
-| `gdwh_api.py` | GDWH-API-Hilfsfunktionen (read-only) |
+| `GUI_monitoring_stac_gdwh.py` | GUI-Anwendung (Tkinter) |
+| `api/stac_api.py` | STAC-API-Hilfsfunktionen (inkl. Download) |
+| `api/gdwh_api.py` | GDWH-API-Hilfsfunktionen (read-only) |
+| `test/test_functions.py` | Unit-Tests (pytest) |
 | `secrets/stac_credentials.json` | Zugangsdaten INT/PROD (nicht versioniert) |
 | `secrets/proxy_config.json` | Proxy-Konfiguration (nicht versioniert) |
