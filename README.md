@@ -67,8 +67,10 @@ Read-only-GUI.
   der ausgewählten Assets. Assets über 50 GB (von CloudFront normalerweise
   mit Fehler 400 gemeldet) werden korrekt als ✓ **>50GB** statt als Fehler
   erkannt
-- **Fehlerhafte anzeigen** / **ITEMs ohne Thumbnail** – blenden die
-  Baumansicht gezielt auf problematische bzw. unvollständige Items ein
+- **Fehlerhafte anzeigen** / **ITEMs ohne Thumbnail** / **ITEMs only with
+  Thumbnail** – blenden die Baumansicht gezielt auf problematische bzw.
+  unvollständige Items ein, bzw. auf Items, die nur aus einem Thumbnail
+  ohne echte Nutzdaten bestehen
 - **Download ausgewählte ITEMs/ASSETs** – lädt die ausgewählten Assets direkt auf die
   eigene Festplatte (ein Unterordner pro Item). Assets über 50 GB werden
   automatisch in Teilstücken heruntergeladen, da sie sonst am

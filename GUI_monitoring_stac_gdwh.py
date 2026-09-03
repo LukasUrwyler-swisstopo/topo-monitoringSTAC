@@ -359,6 +359,7 @@ class StacMonitorApp(tk.Tk):
 
     _SHOW_FAULTY_BTN_LABEL   = "Fehlerhafte anzeigen"
     _SHOW_NO_THUMB_BTN_LABEL = "ITEMs ohne Thumbnail"
+    _SHOW_ONLY_THUMB_BTN_LABEL = "ITEMs only with Thumbnail"
     _SHOW_ALL_BTN_LABEL      = "Alle Assets wieder anzeigen"
 
     _SELECT_ALL_BTN_LABEL   = "Alles auswählen"
@@ -410,6 +411,9 @@ class StacMonitorApp(tk.Tk):
         # Toggle für "ITEMs ohne Thumbnail" (nur bei Auftragstyp RAM sichtbar,
         # analog zum STAC/GDWH Deleting-Tool)
         self._show_no_thumb_only: bool = False
+        # Toggle für "ITEMs only with Thumbnail" (Items mit genau 1 Asset,
+        # das ein Thumbnail ist – analog zum STAC/GDWH Deleting-Tool)
+        self._show_only_thumb: bool = False
 
         # Lade-Spinner im "ITEM-Liste laden"-Button
         self._spinner_job: Optional[str] = None
@@ -640,14 +644,21 @@ class StacMonitorApp(tk.Tk):
 
         # Nur bei Auftragstyp RAM relevant (Thumbnail-Pflicht) – wird erst
         # sichtbar gepackt, wenn AUFTRAGSTYPEN[...] == "ram" ist, siehe
-        # _update_no_thumb_btn_visibility().
+        # _update_no_thumb_btn_visibility(). pack(after=...) dort hält die
+        # Position stets direkt hinter "Fehlerhafte anzeigen", unabhängig
+        # davon, ob "ITEMs only with Thumbnail" bereits gepackt ist.
         self._show_no_thumb_btn = ttk.Button(
             row1, text=self._SHOW_NO_THUMB_BTN_LABEL,
             command=self._toggle_no_thumb_filter, state="disabled")
         self._update_no_thumb_btn_visibility()
 
-        _sep(bar_top)
-        row2 = _group(bar_top, "Export")
+        self._show_only_thumb_btn = ttk.Button(
+            row1, text=self._SHOW_ONLY_THUMB_BTN_LABEL,
+            command=self._toggle_only_thumb_filter, state="disabled")
+        self._show_only_thumb_btn.pack(side="left", padx=(4, 0))
+
+        # ── Zeile 2: Export | Download | ASSET Viewer ───────────────────────
+        row2 = _group(bar_bottom, "Export")
 
         self._export_links_btn = ttk.Button(
             row2, text="Export STAC Browser Links",
@@ -659,7 +670,7 @@ class StacMonitorApp(tk.Tk):
             command=self._create_download_links, state="disabled")
         self._create_links_btn.pack(side="left")
 
-        # ── Zeile 2: Download | ASSET Viewer ────────────────────────────────
+        _sep(bar_bottom)
         row_dl = _group(bar_bottom, "Download")
 
         self._download_btn = ttk.Button(
@@ -1351,7 +1362,8 @@ class StacMonitorApp(tk.Tk):
         is_ram = AUFTRAGSTYPEN.get(self._auftragstyp_var.get(), "") == "ram"
         if is_ram:
             if self._show_no_thumb_btn.winfo_manager() != "pack":
-                self._show_no_thumb_btn.pack(side="left", padx=(8, 0))
+                self._show_no_thumb_btn.pack(
+                    side="left", padx=(8, 0), after=self._show_faulty_btn)
         else:
             if self._show_no_thumb_btn.winfo_manager() == "pack":
                 self._show_no_thumb_btn.pack_forget()
@@ -1394,6 +1406,9 @@ class StacMonitorApp(tk.Tk):
         self._show_no_thumb_only = False
         self._show_no_thumb_btn.config(
             text=self._SHOW_NO_THUMB_BTN_LABEL, style="TButton")
+        self._show_only_thumb = False
+        self._show_only_thumb_btn.config(
+            text=self._SHOW_ONLY_THUMB_BTN_LABEL, style="TButton")
         self._check_btn.config(style="TButton")
         self._populate_tree([], [], [], False)  # Bestehende Liste sofort leeren, bevor neu geladen wird
         self._set_busy(True)
@@ -1553,6 +1568,29 @@ class StacMonitorApp(tk.Tk):
         echten Kandidaten."""
         return self._NO_THUMB_EXCLUDE_SUBSTR in iid.lower()
 
+    def _item_only_thumbnail(self, item: Dict) -> bool:
+        """True, wenn ein Item GENAU 1 Asset besitzt und dieses ein
+        Thumbnail ist – solche Items bestehen praktisch nur aus dem
+        Thumbnail, ohne echte Nutzdaten."""
+        assets = item.get("assets", {})
+        if len(assets) != 1:
+            return False
+        (k, v), = assets.items()
+        return is_thumbnail_asset(k) or is_thumbnail_asset(v.get("href", ""))
+
+    def _toggle_only_thumb_filter(self):
+        """Blendet die Baumansicht auf Items ein, die GENAU 1 Asset besitzen
+        und dieses ein Thumbnail ist. Kombiniert sich mit den übrigen
+        Filtern inkl. 'Fehlerhafte anzeigen' / 'ITEMs ohne Thumbnail'."""
+        self._show_only_thumb = not self._show_only_thumb
+        self._show_only_thumb_btn.config(
+            text=self._SHOW_ALL_BTN_LABEL if self._show_only_thumb
+                 else self._SHOW_ONLY_THUMB_BTN_LABEL,
+            style="Amber.TButton" if self._show_only_thumb else "TButton")
+        self._checked.clear()
+        self._refresh_select_toggle_btn()
+        self._apply_filters()
+
     def _toggle_no_thumb_filter(self):
         """Blendet die Baumansicht auf Items OHNE Thumbnail-Asset ein/aus
         (nur bei Auftragstyp RAM verfügbar). Kombiniert sich mit den übrigen
@@ -1599,6 +1637,8 @@ class StacMonitorApp(tk.Tk):
             items = [it for it in items
                      if not self._item_has_thumbnail(it)
                      and not self._no_thumb_excluded(it["id"])]
+        if self._show_only_thumb:
+            items = [it for it in items if self._item_only_thumbnail(it)]
 
         self._visible_items = items
         self._populate_tree(items, exts, terms, errors_only)
@@ -1701,9 +1741,11 @@ class StacMonitorApp(tk.Tk):
         has_data = bool(self._all_items)
         self._show_faulty_btn.config(
             state="normal" if (has_data and self._assets_checked_once) else "disabled")
-        # "ITEMs ohne Thumbnail" ist reine Metadaten-Prüfung – anders als der
-        # Fehler-Filter unabhängig von einer HEAD-Prüfung nutzbar.
+        # "ITEMs ohne Thumbnail"/"ITEMs only with Thumbnail" sind reine
+        # Metadaten-Prüfungen – anders als der Fehler-Filter unabhängig von
+        # einer HEAD-Prüfung nutzbar.
         self._show_no_thumb_btn.config(state="normal" if has_data else "disabled")
+        self._show_only_thumb_btn.config(state="normal" if has_data else "disabled")
 
     def _expand_all(self):
         for node in self._tree.get_children():
